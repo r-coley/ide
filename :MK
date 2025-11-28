@@ -1,0 +1,35 @@
+#!/bin/sh -x
+
+if [ $# -eq 1 ]
+then 
+	install=1
+else
+	install=0
+fi
+
+set -x
+cc -I. -D_KERNEL -DSYSV -DSVR40 -DAT386 -DVPIX -DWEITEK -DMERGE386 -DBLTCONS -DEVGA -c ide_core.c
+cc -I. -D_KERNEL -DSYSV -DSVR40 -DAT386 -DVPIX -DWEITEK -DMERGE386 -DBLTCONS -DEVGA -c ide_queue.c
+cc -I. -D_KERNEL -DSYSV -DSVR40 -DAT386 -DVPIX -DWEITEK -DMERGE386 -DBLTCONS -DEVGA -c ide_ata.c
+cc -I. -D_KERNEL -DSYSV -DSVR40 -DAT386 -DVPIX -DWEITEK -DMERGE386 -DBLTCONS -DEVGA -c ide_atapi.c
+cc -I. -D_KERNEL -DSYSV -DSVR40 -DAT386 -DVPIX -DWEITEK -DMERGE386 -DBLTCONS -DEVGA -c ide_misc.c
+ld -r -o Driver.o ide_core.o ide_queue.o ide_ata.o ide_atapi.o ide_misc.o
+
+echo "Installing Driver and space.c"
+mkdir -p /etc/conf/pack.d/ide 2>/dev/null
+cp Driver.o /etc/conf/pack.d/ata/
+cp ID/Space.c /etc/conf/pack.d/ata/space.c
+
+if [ $install -eq 1 ]
+then
+	echo "Install System and Master files as well"
+	cp ID/ide.Sdev /etc/conf/sdevice.d/ide
+	cp ID/ide.Mdev /etc/conf/mdevice.d/ide
+	cp /etc/conf/cf.d/mdevice /etc/conf/cf.d/mdevice.RC
+	ed /etc/conf/cf.d/mdevice << EOF
+/^ide[	 ]/d
+r ID/ide.Mdev
+w
+q
+EOF
+fi
