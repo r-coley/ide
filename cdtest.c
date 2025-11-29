@@ -1,17 +1,9 @@
 /*
  * Simple userland test program for ATAPI CD-ROM TOC and audio ioctls.
  *
- * Matches the private ioctls and structs defined in ide.h:
- *   CDIOC_READTOC, CDIOC_PLAYMSF, cd_toc_io_t, cd_msf_io_t.
- *
  * Usage:
  *   cc -o cdtest cdtest.c
  *   ./cdtest [/dev/cdrom0]
- *
- * It will:
- *   - Read the TOC via CDIOC_READTOC
- *   - Print first/last track and a table of tracks
- *   - Optionally prompt to play a track using CDIOC_PLAYMSF
  */
 
 #include <sys/types.h>
@@ -22,13 +14,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* These must match the definitions in ide.h */
+typedef unsigned int uint32_t;
+typedef unsigned int * uintptr_t;
+
+/* Must match ide.h */
 #define CDIOC_BASE      ('C'<<8)
-#define CDIOC_READTOC   (CDIOC_BASE | 0x01)   /* read raw TOC into user buffer */
-#define CDIOC_PLAYMSF   (CDIOC_BASE | 0x02)   /* play audio from MSF range */
+#define CDIOC_READTOC   (CDIOC_BASE | 0x01)
+#define CDIOC_PLAYMSF   (CDIOC_BASE | 0x02)
 
 typedef struct cd_toc_io {
-    caddr_t toc_buf;
+    uint32_t toc_buf;   /* user pointer */
     unsigned short toc_len;
     unsigned char  msf;
     unsigned char  format;
@@ -49,7 +44,7 @@ struct track_info {
     int track;
     int adr;
     int control;
-    int m, s, f;   /* MSF start time */
+    int m, s, f;
 };
 
 static void
@@ -58,7 +53,6 @@ print_usage(const char *prog)
     fprintf(stderr, "Usage: %s [/dev/cdrom0]\n", prog);
 }
 
-/* Parse TOC buffer (MSF format) into track list. Returns number of tracks. */
 static int
 parse_toc_msf(const unsigned char *toc, unsigned short len,
               struct track_info *tracks, int max_tracks,
@@ -75,15 +69,14 @@ parse_toc_msf(const unsigned char *toc, unsigned short len,
     *first_track = toc[2];
     *last_track  = toc[3];
 
-    /* Number of bytes of descriptors after the 2-byte length and 2-byte first/last. */
     if (toc_data_len < 2)
         return -1;
 
-    n_entries = (toc_data_len - 2) / 8;
+    n_entries = (int)(toc_data_len - 2) / 8;
     if (n_entries > max_tracks)
         n_entries = max_tracks;
 
-    p = toc + 4; /* descriptors start here */
+    p = toc + 4;
 
     for (i = 0; i < n_entries; i++) {
         unsigned char adr_ctl = p[1];
@@ -118,7 +111,6 @@ print_tracks(const struct track_info *tracks, int n_tracks,
     for (i = 0; i < n_tracks; i++) {
         const char *type;
 
-        /* CONTROL bit 2 set => data track; otherwise audio. */
         if (tracks[i].control & 0x04)
             type = "data";
         else
@@ -133,7 +125,6 @@ print_tracks(const struct track_info *tracks, int n_tracks,
     }
 }
 
-/* Find MSF range for a given track number: [track, next_track_or_leadout). */
 static int
 find_track_range(const struct track_info *tracks, int n_tracks,
                  int track,
@@ -142,7 +133,6 @@ find_track_range(const struct track_info *tracks, int n_tracks,
 {
     int i;
 
-    /* Find the entry for this track and the next one (or lead-out). */
     for (i = 0; i < n_tracks; i++) {
         if (tracks[i].track == track) {
             int j;
@@ -152,14 +142,10 @@ find_track_range(const struct track_info *tracks, int n_tracks,
             *sf = (unsigned char)tracks[i].f;
 
             if (i + 1 < n_tracks) {
-                /* Use next descriptor's MSF as end. */
                 *em = (unsigned char)tracks[i+1].m;
                 *es = (unsigned char)tracks[i+1].s;
                 *ef = (unsigned char)tracks[i+1].f;
             } else {
-                /* Last entry; just play some fixed amount or to lead-out.
-                 * Here we approximate: add 5 minutes.
-                 */
                 int m = tracks[i].m + 5;
                 *em = (unsigned char)m;
                 *es = (unsigned char)tracks[i].s;
@@ -197,11 +183,11 @@ main(int argc, char **argv)
     }
 
     memset(&tio, 0, sizeof(tio));
-    tio.toc_buf = (caddr_t)toc;
+    tio.toc_buf = (uint32_t)(uintptr_t)toc;
     tio.toc_len = sizeof(toc);
-    tio.msf     = 1;      /* get addresses as MSF */
-    tio.format  = 0x00;   /* standard TOC, track/session info */
-    tio.track   = 0x00;   /* from first track/session */
+    tio.msf     = 1;
+    tio.format  = 0x00;
+    tio.track   = 0x00;
 
     rc = ioctl(fd, CDIOC_READTOC, &tio);
     if (rc < 0) {
@@ -223,7 +209,6 @@ main(int argc, char **argv)
 
     print_tracks(tracks, n_tracks, first_track, last_track);
 
-    /* Optional: ask user if they want to play a track. */
     printf("\nEnter track number to play (0 to skip): ");
     fflush(stdout);
 
@@ -250,7 +235,7 @@ main(int argc, char **argv)
                 if (ioctl(fd, CDIOC_PLAYMSF, &msf) < 0) {
                     perror("CDIOC_PLAYMSF");
                 } else {
-                    printf("PLAYMSF issued successfully (audio playback depends on emulation/hardware).\n");
+                    printf("PLAYMSF issued successfully.\n");
                 }
             }
         }

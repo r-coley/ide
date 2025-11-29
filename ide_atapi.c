@@ -224,9 +224,9 @@ atapi_read10(ata_ctrl_t *ac,u8_t drive,u32_t lba,u16_t nblks,void *buf)
 
 	cdblen=build_cdb_pkt(CDB_READ_10, (u8_t *)u->cdb, lba, nblks);
 
-	printf("READ10: drive=%d LBA=%lu nblks=%u xfer=%lu blksz=%u\n",
-		drive,lba,nblks,xfer,
-		ac->drive[drive]->atapi_blksz);
+	ATADEBUG(1,"READ10: drive=%d LBA=%lu nblks=%u xfer=%lu blksz=%u\n",
+		 drive,lba,nblks,xfer,
+		 ac->drive[drive]->atapi_blksz);
 
 	/* send the command */
 	return atapi_packet(ac,drive,(u8_t *)u->cdb,cdblen,buf,xfer,1,(u8_t *)u->sense,sizeof(u->sense));
@@ -262,12 +262,13 @@ int
 atapi_packet(ata_ctrl_t *ac, u8_t drive, u8_t *cdb, int cdb_len, void *buf, u32_t xfer_len, int dir, u8_t *sense, int sense_len)
 {
 	ata_unit_t *u = ac->drive[drive];
-	u8_t  st, ir, errreg;
+	u8_t  st, err, ir, errreg;
 	u16_t bc, wcount, w;
 	u32_t to_xfer;
 	int   rc, spins;
 	int   retries = 0;
 
+	ATADEBUG(1,"atapi_packet(%s)\n",Cstr(ac));
 retry_cmd:
 	U_CLR_FLAG(u,UF_ABORT);
 
@@ -276,6 +277,34 @@ retry_cmd:
 	if (rc != 0) {
 		goto sense_or_fail;
 	}
+
+	/*
+	 * some ATAPI commands (PLAY AUDIO, PAUSE/RESUME etc) have no data
+	 * phase. Many drives and 86Box in particular will only interrupt
+	 * once the PACKET is accepted and never again when playback
+	 * actually begins. If we drove these through the normal DRQ/data
+	 * loop, ata_packet() would sit forever in ata_wait()
+	 *
+	 * For such "no data" commands we simply:
+	 * - wait for BSY+DRQ to clear
+	 * - check for ERR,
+	 * - and consider the command complete
+	 */
+	if (xfer_len == 0 && dir <= 0 &&
+	    (cdb[0] == CDB_PLAY_AUDIO_MSF ||
+	     cdb[0] == CDB_PLAY_AUDIO_10 ||
+	     cdb[0] == CDB_PAUSE_RESUME)) {
+		/* Poll until the drive is no longer busy and has no DRQ */
+		rc = ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,1000000,&st,0);
+		if (rc != 0 || (st & ATA_SR_ERR)) {
+			/* Treat as error */
+			if (rc == 0) rc=EIO;
+			goto sense_or_fail;
+		}
+		/* Command accepted; playback is now in progress or paused */
+		return 0;
+	}
+
 /* Step 2: data/status loop (polled) */
 	for (; !U_HAS_FLAG(u,UF_ABORT);) {
 		/* Wait for BSY to clear */
@@ -289,8 +318,17 @@ retry_cmd:
 				rc = EIO;
 				goto sense_or_fail;
 			}
+			/* No DRQ and no error means the device is done sending
+			 * data. Even if we request more (xfer_len>0). Many 
+			 * ATAPI devices (and 86Box) return less data than the
+			 * allocation length - Treat this as end of data
+			 */
+			xfer_len=0;
+			break;
+#if 0
 			if (xfer_len == 0) break; /* success */
 			continue;
+#endif
 		}
 
 		/* DRQ asserted: read IReason + ByteCount */
@@ -334,7 +372,7 @@ retry_cmd:
 			break;
 		}
 	}
-	if (ata_wait(ac,0,ATA_SR_BSY,100000L,&st,0) != 0) {
+	if (ata_wait(ac,0,ATA_SR_BSY,100000L,&st,&err) != 0) {
 		rc=EIO;
 		goto sense_or_fail;
 	}
@@ -445,10 +483,12 @@ atapi_read_toc(ata_ctrl_t *ac, u8_t drive, int msf, u8_t format, u8_t track_sess
 	ata_unit_t *u = ac->drive[drive];
 	u8_t cdb[12];
 
+	if (len > 4096) len=4096;
+
 	bzero((caddr_t)cdb, sizeof(cdb));
 	cdb[0] = CDB_READ_TOC;
-	if (msf) cdb[1] |= 0x02; /* MSF bit */
-	cdb[2] = 0;              /* reserved / format-dependent */
+	cdb[1] = (msf) ? 0x02 : 0x00; /* MSF bit */
+	cdb[2] = format;              /* reserved / format-dependent */
 	cdb[6] = track_session;  /* starting track or session */
 	cdb[7] = (u8_t)(len >> 8);
 	cdb[8] = (u8_t)(len & 0xFF);

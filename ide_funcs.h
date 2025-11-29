@@ -92,8 +92,6 @@ int 	atapi_inquiry(ata_ctrl_t *, u8_t);
 int 	atapi_read10(ata_ctrl_t *, u8_t, u32_t, u16_t,void *);
 int 	atapi_mode_sense10(ata_ctrl_t *, u8_t, u8_t, u8_t, void *, u16_t);
 int 	atapi_mode_sense6(ata_ctrl_t *, u8_t, u8_t, u8_t, void *, u8_t);
-int 	atapi_read_toc(ata_ctrl_t *, u8_t, int, u8_t, u8_t, void *, u16_t);
-int 	atapi_play_audio_msf(ata_ctrl_t *, u8_t, u8_t, u8_t, u8_t, u8_t, u8_t, u8_t);
 int 	atapi_packet(ata_ctrl_t *, u8_t, u8_t *, int, void *, u32_t, int, u8_t *, int );
 int	atapi_test_unit_ready(ata_ctrl_t *, u8_t);
 char 	*atapi_class_name(ata_unit_t *);

@@ -400,14 +400,13 @@ struct ata_counters
 #define CDB32_B1(X) 	((u8_t)(((X) >>  8) & 0xff))
 #define CDB32_B0(X) 	((u8_t)((X)         & 0xff))
 
-
 /*
  * Private ATAPI CD-ROM ioctls for TOC/audio control.
  * These are driver-specific and can be mirrored in a user header.
  */
 #define CDIOC_BASE      ('C'<<8)
-#define CDIOC_READTOC   (CDIOC_BASE | 0x01)   /* read raw TOC into user buffer */
-#define CDIOC_PLAYMSF   (CDIOC_BASE | 0x02)   /* play audio from MSF range */
+#define CDIOC_READTOC   (CDIOC_BASE | 0x01)  /* read raw TOC into user buffer */
+#define CDIOC_PLAYMSF   (CDIOC_BASE | 0x02)  /* play audio from MSF range */
 
 /*
  * Argument for CDIOC_READTOC
@@ -420,12 +419,12 @@ struct ata_counters
  * track     - starting track/session number (usually 0 or 1)
  */
 typedef struct cd_toc_io {
-	caddr_t toc_buf;
-	ushort  toc_len;
-	u_char  msf;
-	u_char  format;
-	u_char  track;
-	u_char  reserved;
+	u32_t	toc_buf;
+	u16_t	toc_len;
+	u8_t	msf;
+	u8_t	format;
+	u8_t	track;
+	u8_t	reserved;
 } cd_toc_io_t;
 
 /*
@@ -433,12 +432,12 @@ typedef struct cd_toc_io {
  * Start and end positions in MSF (minutes/seconds/frames).
  */
 typedef struct cd_msf_io {
-	u_char start_m;
-	u_char start_s;
-	u_char start_f;
-	u_char end_m;
-	u_char end_s;
-	u_char end_f;
+	u8_t	start_m;
+	u8_t	start_s;
+	u8_t	start_f;
+	u8_t	end_m;
+	u8_t	end_s;
+	u8_t	end_f;
 } cd_msf_io_t;
 
 #endif /* _IDE_H */

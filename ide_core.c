@@ -205,7 +205,7 @@ atastrategy(struct buf *bp)
 		r->atapi_phase	= ATAPI_PHASE_WAIT_PKT_DRQ;
 		r->atapi_dir	= r->is_write ?ATAPI_DIR_WRITE :ATAPI_DIR_READ;
 		r->atapi_use_dma= 0;
-		ATADEBUG(2,"r->lba=%ld r->nsec=%ld\n",r->lba, r->nsec);
+		ATADEBUG(1,"r->lba=%ld r->nsec=%ld\n",r->lba, r->nsec);
 	} else {
 		r->lba          = base + (u32_t)bp->b_blkno;
 		r->lba_cur      = r->lba;
@@ -385,7 +385,7 @@ ataioctl(dev_t dev, int cmd, caddr_t arg, int mode, cred_t *crp, int *rvalp)
 		if (actual > maxlen)
 			actual = maxlen;
 
-		if (copyout((caddr_t)tocbuf, tio.toc_buf, actual) != 0)
+		if (copyout((caddr_t)tocbuf, (caddr_t)tio.toc_buf, actual) != 0)
 			return EFAULT;
 
 		/* Return actual length to caller. */
@@ -531,7 +531,6 @@ ataintr(int ipl)
 	if (!r) { 
 		ast=inb(ATA_ALTSTATUS_O(ac));
 		drvs=inb(ATA_DRVHD_O(ac));
-
 		u = ac->drive[ (drvs & ATA_DH_DRV) ? 1 : 0 ];
 		BUMP(ac,irq_no_cur);
 		if (U_HAS_FLAG(u,UF_ATAPI)) {
