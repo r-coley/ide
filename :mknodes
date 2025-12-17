@@ -1,0 +1,57 @@
+#!/bin/sh
+
+# --- set your majors here ---
+BMAJ=50      # block major for /dev/ata/*
+CMAJ=50      # char  major for /dev/rata/*
+
+# Compute minor using only expr (+, *)
+calc_minor() {
+	C=$1 D=$2 P=$3 S=$4
+	# (S & 0x0F) + (P<<8) + (D<<4) + ((C & 0x03)<<5)
+	S4=`expr $S % 16`
+	P8=`expr $P \* 256`
+	D4=`expr $D \* 16`
+	C5=`expr $C \* 32`
+	expr $S4 + $P8 + $D4 + $C5
+}
+
+mkone() {
+	C=$1 D=$2 P=$3 S=$4 KIND=$5 NAME=$6
+	MINOR=`calc_minor "$C" "$D" "$P" "$S"`
+
+	M="c${CTRL}d${DRIVE}p${P}"
+	N="c${CTRL}d${DRIVE}p${P}s${S}"
+
+	case "$KIND" in 
+	b)
+		mknod "$NAME/$N" b $BMAJ $MINOR
+		[ "$S" -eq 15 ] && mknod "$NAME/$M" b $BMAJ $MINOR
+		;;
+	c)
+		mknod "$NAME/$N" c $CMAJ $MINOR
+		[ "$S" -eq 15 ] && mknod "$NAME/$M" c $CMAJ $MINOR
+		;;
+	esac
+}
+
+# ---- build nodes ----
+mkdir /dev/ata
+mkdir /dev/rata
+
+# --- which controller/drive to generate ---
+for CTRL in 0 1 2 3
+do
+	for DRIVE in 0 1
+	do
+		# p nodes (whole FDISK partitions): 
+		# slice=15 (0xF) means "whole pN"
+		for P in 0 1 2 3
+		do
+			for S in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+			do
+				mkone $CTRL $DRIVE $P $S b /dev/ata
+				mkone $CTRL $DRIVE $P $S c /dev/rata
+			done
+		done
+	done
+done
