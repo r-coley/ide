@@ -810,6 +810,7 @@ atapi_request(ata_ctrl_t *ac, ata_req_t *r, int arm_ticks)
 		atapi_decode_sense(sense, sizeof(sense));
 
 	ata_finish_current(ac, (rc ? EIO : 0), __LINE__);
+	ide_kick(ac); /*NEW*/
 
 	return rc;
 }
@@ -873,6 +874,7 @@ atapi_handle_error(ata_ctrl_t *ac,ata_req_t *r,u8_t st)
 	r->err = inb(ATA_ERROR_O(ac));
 	r->atapi_phase = ATAPI_PHASE_ERROR;
 	ata_finish_current(ac, EIO, __LINE__);
+	ide_kick(ac); /*NEW*/
 }
 
 /* Command phase: CoD=1, IO=0 send the CDB if not already sent. */
@@ -922,6 +924,7 @@ atapi_handle_data_phase(ata_ctrl_t *ac, ata_req_t *r, u8_t ir, u16_t bc, u32_t b
 					(void)inw(ATA_DATA_O(ac));
 			}
 			ata_finish_current(ac, EFAULT, __LINE__);
+			ide_kick(ac); /*NEW*/
 			r->atapi_phase = ATAPI_PHASE_ERROR;
 			return;
 		}
@@ -948,6 +951,7 @@ atapi_handle_data_phase(ata_ctrl_t *ac, ata_req_t *r, u8_t ir, u16_t bc, u32_t b
 					(void)inw(ATA_DATA_O(ac));
 			}
 			ata_finish_current(ac, EFAULT, __LINE__);
+			ide_kick(ac); /*NEW*/
 			r->atapi_phase = ATAPI_PHASE_ERROR;
 			return;
 		}
@@ -1040,6 +1044,7 @@ atapi_maybe_finish(ata_ctrl_t *ac,ata_req_t *r,u8_t st,int where)
 			}
 
 			ata_finish_current(ac, 0, __LINE__);
+			ide_kick(ac); /*NEW*/
 			r->atapi_phase = ATAPI_PHASE_IDLE;
 		}
 	}

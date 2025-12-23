@@ -40,9 +40,10 @@
 #include <sys/param.h>
 #include <sys/fdisk.h>
 #include <sys/mkdev.h>
-#include <sys/varargs.h>
 #include <sys/xdebug.h>
 #include <sys/kdebugger.h>
+#include <sys/user.h>
+#include <sys/cmn_err.h>
 
 #ifndef TRUE
 #define TRUE 	1
@@ -143,16 +144,15 @@
 #define ATA_NPART 16
 
 /* --- Unified controller flags --- */
-#define ACF_NONE          0x0000  
-#define ACF_PRESENT       0x0001  /* interrupts enabled path */
-#define ACF_INTR_MODE     0x0002  /* interrupts enabled path */
-#define ACF_IN_ISR        0x0004  /* currently in ISR context */
-#define ACF_POLL_RUNNING  0x0008  /* poll engine active */
-#define ACF_PENDING_KICK  0x0010  /* deferred kick requested */
-#define ACF_BUSY  	  0x0020  /* busy */
-#define ACF_CLOSING  	  0x0040  /* busy */
-#define ACF_IRQ_ON	  0x0080  /* Interupts Enabled */
-#define ACF_SYNC_DONE     0x0100  /* current sync request done */
+#define ACF_NONE            0x0000  
+#define ACF_PRESENT         0x0001  /* interrupts enabled path */
+#define ACF_INTR_MODE       0x0002  /* interrupts enabled path */
+#define ACF_IN_ISR          0x0004  /* currently in ISR context */
+#define ACF_POLL_RUNNING    0x0008  /* poll engine active */
+#define ACF_PENDING_KICK    0x0010  /* deferred kick requested */
+#define ACF_BUSY  	    0x0020  /* busy */
+#define ACF_CLOSING  	    0x0040  /* busy */
+#define ACF_IRQ_ON	    0x0080  /* Interupts Enabled */
 
 #define AC_HAS_FLAG(ac,f)   (((ac)->flags & (f)) != 0)
 #define AC_SET_FLAG(ac,f)   ((ac)->flags |= (f))
@@ -171,6 +171,9 @@
 #define UF_REMOVABLE		0x0020
 #define UF_ATAPI_NEEDS_SENSE	0x0080
 #define UF_ABORT		0x8000
+#define UF_USER_MASK	(UF_PRESENT|UF_ATAPI|UF_CDROM|UF_MOZIP|UF_HASMEDIA|UF_REMOVABLE)
+
+#define V_GETTYPE        (VIOC|20)        
 
 #define U_HAS_FLAG(u,f)	(((u)->flags & (f)) != 0)
 #define U_SET_FLAG(u,f)	((u)->flags |= (f))
@@ -229,6 +232,16 @@ typedef struct ata_unit ata_unit_t;
 typedef struct ata_req ata_req_t;
 typedef struct ata_counters ata_counters_t;
 
+typedef struct ata_last_cmd {
+	u8_t	cmd;
+	u8_t	sc;
+	u8_t	dh;
+	u32_t	lba;
+	u8_t	err;
+	int	reqid;
+	u32_t	tick;
+} ata_last_cmd_t;
+
 typedef struct ata_part {
 	u8_t	active;
 	u32_t	base_lba;
@@ -259,6 +272,8 @@ struct ata_ctrl {
 	
 	u8_t	pio_multi;
 	int	multi_set_ok; /* 1 if SET MULTIPLE accepted */
+
+	ata_last_cmd_t	lc;
 
 	/*** Counters ***/
 	ata_counters_t *counters;
@@ -353,6 +368,13 @@ struct ata_unit {
 	caddr_t	atapi_bounce;
 
 	int	drive;
+};
+
+struct v_gettype {
+	u32_t	flags;
+	char 	model[41];
+	char	vendor[9];
+	char 	product[17];
 };
 
 struct ata_counters

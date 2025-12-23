@@ -177,8 +177,8 @@ ata_dump_stats(void)
 
 		if (!AC_HAS_FLAG(ac,ACF_PRESENT)) continue;
 			
-		printf("ATA%d: intrmode=%d flag=%08x present(%d,%d) turnon=%lu turnoff=%lu\n",
-			ctrl, AC_HAS_FLAG(ac,ACF_INTR_MODE),ac->flags,
+		printf("ATA%d: [%08x] intrmode=%d flag=%08x present(%d,%d) turnon=%lu turnoff=%lu\n",
+			ctrl, ac, AC_HAS_FLAG(ac,ACF_INTR_MODE),ac->flags,
 			u0 ? U_HAS_FLAG(u0,UF_PRESENT) : 0,
 			u1 ? U_HAS_FLAG(u1,UF_PRESENT) : 0,
 			ac->counters->irq_turnon,
@@ -281,17 +281,20 @@ ata_rescue(int ctrl)
 	ata_ctrl_t *ac= &ata_ctrl[1];
 	ata_unit_t *u;
 
-	if (ctrl < 1 || ctrl > 3) {
+	if (ctrl < 0 || ctrl > 3) {
 		printf("Invalid ctrl\n");
 		return;
 	}
 	ac= &ata_ctrl[ctrl];
 	if (!AC_HAS_FLAG(ac,ACF_PRESENT)) return;
-	ata_rescueit(ac);
+
 	u=ac->drive[0];
 	U_SET_FLAG(u,UF_ABORT);
 	u=ac->drive[1];
 	U_SET_FLAG(u,UF_ABORT);
+
+
+	ata_rescueit(ac);
 }
 
 void
@@ -313,7 +316,7 @@ ata_rescueit(ata_ctrl_t *ac)
 	splx(s);
 
 	ata_finish_current(ac,EIO,__LINE__);
-	ide_need_kick(ac);
+	ide_kick(ac);
 }
 
 int
@@ -366,6 +369,7 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 		r->ast = st;
 		r->err = er;
 		ata_finish_current(ac,EIO,__LINE__); 
+		ide_kick(ac); /*NEW*/
 		return;
 	}
 
@@ -373,6 +377,7 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 	if (st & ATA_SR_DRQ) {
 		if (ata_data_phase_service(ac,r) < 0) {
 			ata_finish_current(ac, EIO, __LINE__);
+			ide_kick(ac); /*NEW*/
 			return;
 		}
 		if (r->chunk_left) return;
@@ -390,7 +395,16 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 		
 		/* No more sectors? we're done */
 		if (r->sectors_left == 0) {
-			ata_finish_current(ac, EOK, __LINE__);
+			if (!r->is_write) {
+				ata_finish_current(ac, EOK, __LINE__);
+				ide_kick(ac); /*NEW*/
+			}
+			/* 
+			 * For writes do not finish here; we expect a 
+			 * final completion interrupt once the device is
+			 * fully idle (BSY=0, DRQ=0). That inteerupt will
+			 * be handled in the "final completion" branch below
+			 */
 			return;
 		}
 
@@ -403,8 +417,11 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 	if (!(st & ATA_SR_BSY) &&
 	    !(st & ATA_SR_DRQ)) {
 		if (r->sectors_left == 0) {
-			ATADEBUG(2,"Calling finish as !ATA_SR_BSY ATA_SR_DRQ ATA_SR_ERR ST=%02x\n",st);
+			ATADEBUG(2,"Calling finish as !ATA_SR_BSY && !ATA_SR_DRQ ST=%02x flags=%08x\n",st,ac->flags);
 			ata_finish_current(ac, EOK, __LINE__);
+			ATADEBUG(2,"Now calling ide_kick flags=%08x\n",
+				ac->flags);
+			ide_kick(ac); /*NEW*/
 			return;
 		}
 	}
@@ -427,6 +444,15 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 	ata_sel(ac, drive, lba);
 	er=ata_err(ac,&ast,&err);
 	r->flags &= ~ATA_RF_CDB_SENT;
+
+	/* Cache last command */
+	ac->lc.cmd   = cmd;
+	ac->lc.sc    = sc;
+	ac->lc.dh    = drive;
+	ac->lc.lba   = lba;
+	ac->lc.err   = err;
+	ac->lc.reqid = r->reqid;
+	ac->lc.tick  = lbolt;
 
 	switch (cmd) {
 	case ATA_CMD_READ_SEC:
@@ -516,7 +542,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	int	s, er, multi_ok;
 	caddr_t	user_ptr;
 
-	ATADEBUG(2,"ata_issue_pio(Reqid=%ld)\n",r ? r->reqid : 0);
+	ATADEBUG(2,"ata_request(Reqid=%ld)\n",r ? r->reqid : 0);
 	if (!r) return;
 
 	if (AC_HAS_FLAG(ac,ACF_INTR_MODE)) {
@@ -580,7 +606,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 
 	if (arm_ticks) ide_arm_watchdog(ac,arm_ticks);
 
-	if (!AC_HAS_FLAG(ac,ACF_INTR_MODE)) ide_need_kick(ac);
+	if (!AC_HAS_FLAG(ac,ACF_INTR_MODE)) ide_kick(ac);
 }
 
 void 
@@ -604,23 +630,20 @@ ata_finish_current(ata_ctrl_t *ac, int err,int place)
 	if (!que) {
 		ATADEBUG(2,"ata_finish_current() que NULL\n");
 	}
-
-	s = splbio();
-	r  = que ? que->cur : NULL;
-	if (!r) {
-		ATADEBUG(9,"ata_finish(reqid: None)\n");
-		if (que) { 
-			que->last_err = err;
-			que->state = AS_IDLE;
-			AC_CLR_FLAG(ac, ACF_BUSY);
-			AC_SET_FLAG(ac, ACF_SYNC_DONE); 
-			wakeup((caddr_t)ac->ioque); 
-		}
-		splx(s);
-		return;
-	}
-
-	ATADEBUG(9,"ata_finish(reqid: %lu)\n",r->reqid);
+s = splbio();
+r  = que ? que->cur : NULL;
+if (!r) {
+    ATADEBUG(9,"ata_finish(reqid: None)\n");
+    if (que) {
+        que->last_err = err;
+        que->state = AS_IDLE;
+        AC_CLR_FLAG(ac, ACF_BUSY);
+        que->cur = NULL;
+    }
+    splx(s);
+    return;
+}
+ATADEBUG(9,"ata_finish(reqid: %lu)\n",r->reqid);
 	r->err = err;
 	if (r->flags & ATA_RF_DONE) { splx(s); return; }
 	r->flags |= ATA_RF_DONE;
@@ -652,22 +675,18 @@ ata_finish_current(ata_ctrl_t *ac, int err,int place)
 	}
 
 	s=splbio();
-	AC_CLR_FLAG(ac,ACF_BUSY);
-	AC_SET_FLAG(ac, ACF_SYNC_DONE);
-	que->cur = NULL;
-	que->state = AS_IDLE;
-	que->last_err = r->err;
-	splx(s);
-
-	if (bp) {
+AC_CLR_FLAG(ac,ACF_BUSY);
+que->cur = NULL;
+que->state = AS_IDLE;
+que->last_err = r->err;
+splx(s);
+if (bp) {
 		if (err) berror(bp,resid,EIO);
 		else     bok(bp,resid);
 	}
 
-	wakeup((caddr_t)ac->ioque);
-
 	if (r) kmem_free(r,sizeof(*r));
-	ide_kick(ac);
+	AC_SET_FLAG(ac,ACF_PENDING_KICK);
 }
 
 int
@@ -739,38 +758,35 @@ ata_prime_write(ata_ctrl_t *ac, ata_req_t *r)
 }
 
 int
-ata_pushreq(ata_ctrl_t *ac,ata_req_t *r)
+ata_pushreq(ata_ctrl_t *ac, ata_req_t *r)
 {
-	ata_ioque_t *que = ac->ioque;
-	int	s;
+    ata_ioque_t *que = ac ? ac->ioque : NULL;
+    struct buf  *bp  = r ? r->bp : NULL;
+    int s;
 
-	s = splbio();
-	AC_CLR_FLAG(ac, ACF_SYNC_DONE);
-	ide_q_put(ac, r);
+    ATADEBUG(1, "ata_pushreq(%s: r->id=%ld flags=%08x)\n",
+        Cstr(ac), r ? r->reqid : 0L, ac ? ac->flags : 0);
 
-	if (AC_HAS_FLAG(ac,ACF_INTR_MODE) || 
-	    !AC_HAS_FLAG(ac,ACF_POLL_RUNNING))
-		ide_need_kick(ac);
+    if (!ac || !que || !r || !bp) {
+        /* Internal callers should always provide a buf-backed request. */
+        return EIO;
+    }
 
-	if (AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
-		while (!AC_HAS_FLAG(ac, ACF_SYNC_DONE)) {
-			sleep((caddr_t)ac->ioque, PRIBIO);
-			/* printf("Woken2 ac-ioque flags=%08x\n",ac->flags);*/
-		}
-		AC_CLR_FLAG(ac,ACF_SYNC_DONE);
-		splx(s);
-		return que->last_err;
-	}
-	splx(s);
+    /*
+     * Queue and kick under splbio(), then wait using the kernel buf mechanism.
+     * This matches the vanilla hd driver pattern (strategy + iowait/biodone),
+     * and avoids controller-global SYNC_DONE races.
+     */
+    s = splbio();
+    ide_q_put(ac, r);
 
-	/* Polled mode: drive engine until done, never sleep. */
-	for (;;) {
-		if (AC_HAS_FLAG(ac, ACF_SYNC_DONE)) break;
-		if (!AC_HAS_FLAG(ac, ACF_POLL_RUNNING)) ide_kick(ac);
-		drv_usecwait(10);
-	}
-	AC_CLR_FLAG(ac,ACF_SYNC_DONE);
-	return que->last_err;
+    if (AC_HAS_FLAG(ac, ACF_INTR_MODE) || !AC_HAS_FLAG(ac, ACF_POLL_RUNNING))
+        ide_kick(ac);
+
+    splx(s);
+
+    iowait(bp);
+    return (bp->b_flags & B_ERROR) ? bp->b_error : 0;
 }
 
 int
@@ -790,15 +806,4 @@ multicmd(ata_ctrl_t *ac, int is_write, u32_t lba, u32_t nsec)
 		return multi_ok ? ATA_CMD_READ_MULTI
 				: ATA_CMD_READ_SEC;
 	}
-}
-
-void
-dumpbuf(char *msg, u32_t lba, char *buf)
-{
-	u8_t *p = (u8_t *)buf;
-
-	ATADEBUG(1,"**%10s: lba=%6u [%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x]\n",
-		msg,lba,
-		p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],p[8],
-		p[9],p[10],p[11],p[12],p[13],p[510],p[511]);
 }

@@ -88,6 +88,7 @@ ide_watchdog(caddr_t arg)
 		BUMP(ac,eoc_polled);
 		ata_finish_current(ac, EOK, 12);
 		splx(s);
+		ide_kick(ac);
         	return;
 	}
 	splx(s);
@@ -97,12 +98,14 @@ void
 ide_q_put(ata_ctrl_t *ac, ata_req_t *r)
 {
 	ata_ioque_t *q=ac->ioque;
-	int	s;
+	int	start_engine=0, s;
 
 	ATADEBUG(5,"ide_q_put()\n");
 
 	s = splbio();
         r->next = (ata_req_t *)0;
+	if (!AC_HAS_FLAG(ac,ACF_BUSY)) start_engine=1;
+
         if (q->q_tail)
                 q->q_tail->next = r;
         else
@@ -110,6 +113,8 @@ ide_q_put(ata_ctrl_t *ac, ata_req_t *r)
         q->q_tail = r;
         ac->nreq++;
 	splx(s);	
+
+	if (start_engine) ide_kick(ac);
 }
 
 ata_req_t *
@@ -133,12 +138,12 @@ ide_q_get(ata_ctrl_t *ac)
 }
 
 void
-ide_kick(ata_ctrl_t *ac)
+ide_kick_internal(ata_ctrl_t *ac)
 {
 	ata_ioque_t *q = ac->ioque;
 	int 	s, do_start=0;
 
-	ATADEBUG(5,"ide_kick(flags=%08x)\n",ac->flags);
+	ATADEBUG(5,"ide_kick_internal()\n");
 
 	s = splbio();
 	if (AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
@@ -146,6 +151,7 @@ ide_kick(ata_ctrl_t *ac)
 	} else {
 		if (!q->cur) do_start=1;
 	}
+	AC_CLR_FLAG(ac,ACF_PENDING_KICK);
 	splx(s);
 
         if (do_start) ide_start(ac);
@@ -157,15 +163,35 @@ ide_kick(ata_ctrl_t *ac)
 }
 
 void
+ide_kick(ata_ctrl_t *ac)
+{
+	int	s;
+
+	ATADEBUG(5,"ide_kick()\n");
+
+	s=splbio();
+	if (AC_HAS_FLAG(ac, ACF_IN_ISR) || AC_HAS_FLAG(ac,ACF_POLL_RUNNING)) {
+		AC_SET_FLAG(ac,ACF_PENDING_KICK);
+		splx(s);
+		return;
+	}
+	AC_CLR_FLAG(ac,ACF_PENDING_KICK);
+	splx(s);
+	ide_kick_internal(ac);
+}
+
+void
 ide_start(ata_ctrl_t *ac)
 {
 	ata_ioque_t *q = ac->ioque;
-        ata_req_t  *r;
+	ata_req_t   *r = q ? q->q_head : NULL;
 	u8_t	drive, ast;
         int	s;
 
 	ast=inb(ATA_ALTSTATUS_O(ac));
-	ATADEBUG(5,"ide_start(#req=%d ST=%02x)\n",ac->nreq,ast);
+/*RC*/
+	ATADEBUG(5,"ide_start(%s: reqid=%08x #req=%d cur=%p ST=%02x flags=%08x)\n",
+		Cstr(ac), r ? r->reqid : 0, ac->nreq, q->cur, ast, ac->flags);
 
         s = splbio();
 	if (AC_HAS_FLAG(ac,ACF_BUSY) || 
@@ -202,21 +228,4 @@ ide_start(ata_ctrl_t *ac)
 	ata_program_next_chunk(ac,r,HZ/8);
 	splx(s);
 	return;
-}
-
-void
-ide_need_kick(ata_ctrl_t *ac)
-{
-	int	s;
-	
-	ATADEBUG(5,"ide_need_kick()\n");
-
-	s=splbio();
-	if (AC_HAS_FLAG(ac, ACF_IN_ISR) || AC_HAS_FLAG(ac,ACF_POLL_RUNNING)) {
-		AC_SET_FLAG(ac,ACF_PENDING_KICK);
-		splx(s);
-		return;
-	}
-	splx(s);
-	ide_kick(ac);
 }

@@ -1,6 +1,32 @@
 #include "ide.h"
+#include <stdarg.h>
+#include <sys/cmn_err.h>
+
+#define BS	0x08
+
+extern char 	putbuf[];
+extern int	putbufsz;
+extern int	putbufndx;
+extern short	prt_where;
+
+extern int  dbg_getchar();
+extern void dbg_putchar(int);
 
 u32_t	req_seq=0;
+
+void
+ATADEBUG(int lvl, char *fmt, ...) 
+{
+	va_list ap;
+	int	old_prt_where=prt_where;
+
+	if (atadebug < lvl || fmt == NULL) return;
+
+    	va_start(ap, fmt);
+    	kv_vsnprintf(NULL, (size_t)-1, fmt, ap);
+    	va_end(ap);
+    	return ;
+}
 
 void
 CopyTbl(ata_part_t *fp,struct ipart *ipart)
@@ -35,14 +61,6 @@ static	char	buf[50];
 	}
 	return buf;
 } 
-
-void
-ATADEBUG(int x, char *fmt, ...) 
-{
-	if (atadebug >= x) {
-		xprintf(fmt,(u32_t)((u32_t *)&fmt+1));
-	}
-}
 
 char *
 Cstr(ata_ctrl_t *ac) 
@@ -117,7 +135,7 @@ ata_attach(int ctrl)
 	if (!AC_HAS_FLAG(ac,ACF_PRESENT)) return;
 
 	if (ata_force_polling == 0) {
-		RegisterIRQ(ac->irq,&ataintr, SPL6, INTR_TRIGGER_EDGE);
+		RegisterIRQ(ac->irq,&ataintr, SPL5, INTR_TRIGGER_EDGE);
 		AC_SET_FLAG(ac,ACF_INTR_MODE);
 	}
 	ata_softreset_ctrl(ac);
@@ -252,10 +270,10 @@ ata_read_signature(ata_ctrl_t *ac, u8_t drive,u16_t *type)
 	switch ((hc<<8)|lc)
 	{
 	case 0x0000: dev = DEV_ATA|DEV_PARALLEL; 	break;
+	case 0x0800: dev = DEV_ATA|DEV_PARALLEL; 	break;
 	case 0xC33C: dev = DEV_ATA|DEV_SERIAL; 		break;
 	case 0xEB14: dev = DEV_ATAPI|DEV_PARALLEL; 	break;
 	case 0x9669: dev = DEV_ATAPI|DEV_SERIAL; 	break;
-	/* case 0x7f7f:  return 1; */
 	default:     dev = DEV_UNKNOWN;			break;
 	}
 	*type = dev;
@@ -278,7 +296,6 @@ ata_probe_unit(ata_ctrl_t *ac, u8_t drive)
 
 	if (ata_identify(ac, drive) != 0) return ENXIO;
 
-	AC_SET_FLAG(ac, ACF_SYNC_DONE);
 	ac->tmo_id    = 0;
 	ac->tmo_ticks = drv_usectohz(2000000); /* 2s is sane for PIO */
 
@@ -464,7 +481,6 @@ ata_getblock(dev_t dev, daddr_t blkno, caddr_t buf, u32_t count)
 
 	rc = (bp->b_flags & B_ERROR) ? EIO : 0;
 	bcopy(bp->b_un.b_addr,buf,count);
-	dumpbuf("GETBLOCK", bp->b_blkno, buf);
 	brelse(bp);
 
 	return rc;
@@ -489,8 +505,6 @@ ata_putblock(dev_t dev, daddr_t blkno, caddr_t buf, u32_t count)
 	bp->b_bcount = count;
 
 	bcopy(buf, bp->b_un.b_addr, count);
-	dumpbuf("PUTBLOCK", bp->b_blkno, bp->b_un.b_addr);
-
 	atastrategy(bp);
 	iowait(bp);
 	rc = (bp->b_flags & B_ERROR) ? EIO : 0;
@@ -553,12 +567,14 @@ ide_poll_engine(ata_ctrl_t *ac)
 
 		if (ast & ATA_SR_ERR) {
 			ata_finish_current(ac,EIO,__LINE__);
+			ide_kick(ac);/*NEW*/
 			break;
 		}
 
 		if (ast & ATA_SR_DRQ) {
 			if (ata_data_phase_service(ac,r) < 0) {
 				ata_finish_current(ac, EIO, __LINE__);
+				ide_kick(ac);/*NEW*/
 				break;
 			}
 
@@ -567,6 +583,7 @@ ide_poll_engine(ata_ctrl_t *ac)
 					ata_program_next_chunk(ac,r,HZ/8);
 				} else {
 					ata_finish_current(ac,0,__LINE__);
+					ide_kick(ac);/*NEW*/
 					break;
 				}
 			}
@@ -577,6 +594,7 @@ ide_poll_engine(ata_ctrl_t *ac)
 		 * no data */
 		if (r->sectors_left == 0 && r->chunk_left == 0) {
 			ata_finish_current(ac,0,__LINE__);
+			ide_kick(ac);/*NEW*/
 			break;
 		}
 	} while (AC_HAS_FLAG(ac, ACF_PENDING_KICK));
@@ -584,7 +602,7 @@ ide_poll_engine(ata_ctrl_t *ac)
 	if (AC_HAS_FLAG(ac, ACF_PENDING_KICK) &&
 	    !AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
 		AC_CLR_FLAG(ac, ACF_PENDING_KICK);
-		ide_kick(ac);
+		ide_kick_internal(ac);
 	}
 
 	AC_CLR_FLAG(ac,ACF_POLL_RUNNING);
@@ -594,15 +612,6 @@ ide_poll_engine(ata_ctrl_t *ac)
  * Dump the kernel message ring buffer (putbuf[]) to the console
  * in chronological order, without appending to putbuf again.
  */
-extern char 	putbuf[];
-extern int	putbufsz;
-extern int	putbufndx;
-
-extern int  dbg_getchar();
-extern void dbg_putchar(int);
-
-#define BS	0x08
-
 void
 dump_putbuf(void)
 {
@@ -651,6 +660,12 @@ dump_putbuf(void)
 			dbg_printf("--More--");
 
 			ch = dbg_getchar() & 0x7f;
+			dbg_putchar(BS); dbg_putchar(BS);	
+			dbg_putchar(BS); dbg_putchar(BS);	
+			dbg_putchar(BS); dbg_putchar(BS);	
+			dbg_putchar(BS); dbg_putchar(BS);	
+			dbg_putchar('\n');	
+
 			switch(ch) {
 			case '\r':
 			case '\n':
@@ -664,11 +679,6 @@ dump_putbuf(void)
 				lines=0;	
 				break;
 			}
-			dbg_putchar(BS); dbg_putchar(BS);	
-			dbg_putchar(BS); dbg_putchar(BS);	
-			dbg_putchar(BS); dbg_putchar(BS);	
-			dbg_putchar(BS); dbg_putchar(BS);	
-			dbg_putchar('\n');	
 		}
 	}
 }

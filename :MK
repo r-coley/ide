@@ -16,9 +16,10 @@ cc -I. -D_KERNEL -DSYSV -DSVR40 -DAT386 -DVPIX -DWEITEK -DMERGE386 -DBLTCONS -DE
 ld -r -o Driver.o ide_core.o ide_queue.o ide_ata.o ide_atapi.o ide_misc.o
 
 echo "Installing Driver and space.c"
-mkdir -p /etc/conf/pack.d/ide 2>/dev/null
+mkdir -p /etc/conf/pack.d/ata 2>/dev/null
 cp Driver.o /etc/conf/pack.d/ata/
 cp ID/Space.c /etc/conf/pack.d/ata/space.c
+cp ide.h ide_funcs.h ide_hw.h /usr/include/sys/
 
 if [ $install -eq 1 ]
 then

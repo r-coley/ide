@@ -1,5 +1,4 @@
 #include "ide.h"
-#include "sys/user.h"
 
 ata_unit_t ata_unit[ATA_MAX_UNITS]; /* up to 2 drives per controller */
 
@@ -257,8 +256,7 @@ ataioctl(dev_t dev, int cmd, caddr_t arg, int mode, cred_t *crp, int *rvalp)
 	int	drive = u->drive;
 	ata_part_t *fp=&u->fd[fdisk];
 
-	if (cmd != V_VERIFY)	/*** Too noisy ***/
-	printf("ataioctl(%s,%s)\n",Dstr(dev),Istr(cmd));
+	ATADEBUG(1,"ataioctl(%s,%s)\n",Dstr(dev),Istr(cmd));
 
 	if (!U_HAS_FLAG(u,UF_PRESENT)) return ENODEV;
 
@@ -321,8 +319,6 @@ ataioctl(dev_t dev, int cmd, caddr_t arg, int mode, cred_t *crp, int *rvalp)
 			kmem_free(ptr,ATA_SECSIZE);
 			return EFAULT;
 		}
-		/* dumpbuf("RDABS", (u32_t)ab.abs_sec, ptr);*/
-
 		printf("call copyout()\n");
                 if (copyout(ptr,ab.abs_buf,ATA_SECSIZE) != 0) {
 			kmem_free(ptr,ATA_SECSIZE);
@@ -346,8 +342,6 @@ ataioctl(dev_t dev, int cmd, caddr_t arg, int mode, cred_t *crp, int *rvalp)
 			kmem_free(ptr,ATA_SECSIZE);
 			return EFAULT; 
 		} 
-		dumpbuf("WRABS", (u32_t)ab.abs_sec, ptr);
-
     		if (ata_putblock(ABSDEV(dev),ab.abs_sec,ptr,ATA_SECSIZE) != 0) {
 			kmem_free(ptr,ATA_SECSIZE);
 			return EIO;
@@ -362,6 +356,22 @@ ataioctl(dev_t dev, int cmd, caddr_t arg, int mode, cred_t *crp, int *rvalp)
 		vfy.vfy_out.err_code=0;
 		if (copyout((caddr_t)&vfy,arg,sizeof(vfy)) < 0)
 			return EFAULT;
+		return 0;
+	    }
+
+	case V_GETTYPE: {
+		struct v_gettype gt;
+
+		gt.flags = u->flags & UF_USER_MASK;
+		gt.model[0] = '0';
+		strncpy(gt.model, u->model, sizeof(gt.model) -1);
+		gt.model[sizeof(gt.model)-1]=0;
+		strncpy(gt.product, u->product, sizeof(gt.product) -1);
+		gt.product[sizeof(gt.product)-1]=0;
+		strncpy(gt.vendor, u->vendor, sizeof(gt.vendor) -1);
+		gt.vendor[sizeof(gt.vendor)-1]=0;
+		
+		if (copyout((caddr_t)&gt,arg,sizeof(gt)) != 0) return EFAULT;
 		return 0;
 	    }
 
@@ -520,12 +530,8 @@ atainit(void)
 	bzero((caddr_t)&ata_unit[0],sizeof(ata_unit_t)*ATA_MAX_UNITS);
 	for (ctrl = 0; ctrl < ATA_MAX_CTRL; ctrl++) {
 		ac = &ata_ctrl[ctrl];
-
 		ac->idx = ctrl;
 		ac->multi_set_ok = 0; /* disable MULTIPLE until proven */
-		if (!AC_HAS_FLAG(ac,ACF_PRESENT)) {
-			continue;
-		}
 
 		q = (ata_ioque_t *)kmem_zalloc(sizeof(ata_ioque_t),KM_SLEEP);
 		if (!q) return -1;
@@ -545,7 +551,8 @@ atainit(void)
 		ac->drive[0]->drive = 0;
 		ac->drive[1]->drive = 1;
 
-		ata_attach(ctrl);
+		if (AC_HAS_FLAG(ac,ACF_PRESENT)) ata_attach(ctrl);
+
 		if (AC_HAS_FLAG(ac,ACF_INTR_MODE)) {
 			/*
 			 * If in Interrupt mode as opposed POLL mode
@@ -561,21 +568,21 @@ atainit(void)
 }
 
 ata_ctrl_t *
-atafindctrl(int ipl)
+atafindctrl(int irq)
 {
 	ata_ctrl_t *ac;
 	int 	ctrl;
 
 	for (ctrl = 0; ctrl < ATA_MAX_CTRL; ctrl++) {
 		ac=&ata_ctrl[ctrl];
-		if (ac->irq == ipl && AC_HAS_FLAG(ac,ACF_PRESENT)) return ac;
+		if (ac->irq == irq && AC_HAS_FLAG(ac,ACF_PRESENT)) return ac;
 	}
 	return DDI_INTR_UNCLAIMED;
 }
 
 /* ---------- interrupt handler (ATA PIO, per-sector handshakes) ---------- */
 int
-ataintr(int ipl)
+ataintr(int irq)
 {
 	int 	ctrl;
 	ata_ctrl_t *ac;
@@ -586,50 +593,51 @@ ataintr(int ipl)
 	u8_t 	st, ast, err, drvs;
 	u32_t	lba;
 
-	ATADEBUG(1,"ataintr(%d)\n",ipl);
+	ATADEBUG(1,"ataintr(%d)\n",irq);
 
-	if ((ac=atafindctrl(ipl)) == (ata_ctrl_t *)0)
+	if ((ac=atafindctrl(irq)) == (ata_ctrl_t *)0)
 		return DDI_INTR_UNCLAIMED;
-
-	if (!AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
-		st=inb(ATA_STATUS_O(ac)); /* ataintr() */
-		BUMP(ac,irq_spurious);
-		return DDI_INTR_CLAIMED;
-	}	
 
 	q = ac->ioque;
 	r = q ? q->cur : NULL;	/* ataintr() */
-	st=inb(ATA_STATUS_O(ac)); /* ataintr() */
 
-	/*NEW*/
+	BUMP(ac,irq_seen);
+	st=inb(ATA_STATUS_O(ac)); /* ataintr() */
+ 	err=(st & (ATA_SR_ERR|ATA_SR_DWF)) ? inb(ATA_ERROR_O(ac)) : 0;
+	if (err) {
+		printf("Drive ERR:DWF\n");
+	}
+
+	if (!AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
+		BUMP(ac,irq_spurious);
+		return DDI_INTR_UNCLAIMED;
+	}
+
 	if (atapi_force_polling) {
 		inb(ATA_ALTSTATUS_O(ac));
 		BUMP(ac,irq_atapi_ignored);
 		return DDI_INTR_CLAIMED;
 	}
-	/*NEW*/
 
 	if (!r) { 
 		ast=inb(ATA_ALTSTATUS_O(ac));
 		drvs=inb(ATA_DRVHD_O(ac));
 		u = ac->drive[ (drvs & ATA_DH_DRV) ? 1 : 0 ];
+
 		BUMP(ac,irq_no_cur);
 		if (U_HAS_FLAG(u,UF_ATAPI)) {
- 			if (ast & ATA_SR_ERR) {
+ 			if (ast & ATA_SR_ERR) 
 				U_SET_FLAG(u,UF_ATAPI_NEEDS_SENSE);
-			}
-			else
-			if (ast == 0x50 || ast == 0x58) {
-				return DDI_INTR_CLAIMED;
-			}
 			return DDI_INTR_CLAIMED;
 		}
 		
+		printf("STRAY %s: ST=%02x ERR=%02x AST=%02x q=%p cur=%p last: cmd=%02x lba=%ld sc=%d dh=%02x reqid=%d age=%lu\n",
+			Cstr(ac),st,err,ast,
+			q,q?q->cur:NULL,
+			ac->lc.cmd,ac->lc.lba,ac->lc.sc,ac->lc.dh,ac->lc.reqid,
+			(lbolt-ac->lc.tick));
 
-		printf("%s: q->cur is NULL stray IRQ ST=%02x SEL=%02x\n",
-			Cstr(ac),st,drvs);
-
-		return DDI_INTR_UNCLAIMED;
+		return DDI_INTR_CLAIMED;
 	}
 
 	AC_CLR_FLAG(ac,ACF_PENDING_KICK);
@@ -637,24 +645,15 @@ ataintr(int ipl)
 	BUMP(ac, irq_handled);
 
 	/* ATAPI IRQ dispatch */
-    	if (r->cmd == ATA_CMD_PACKET) {
-#if 0
-		if (!atapi_force_polling) {
-#endif
-			atapi_service_irq(ac, r, st); 
-#if 0
-		} else {
-			BUMP(ac,irq_atapi_ignored);
-		}
-#endif
-	}
+    	if (r->cmd == ATA_CMD_PACKET) 
+		atapi_service_irq(ac, r, st); 
 	else
 		ata_service_irq(ac, r, st);
 
 	AC_CLR_FLAG(ac,ACF_IN_ISR);
 	if (AC_HAS_FLAG(ac,ACF_PENDING_KICK)) {
 		AC_CLR_FLAG(ac,ACF_PENDING_KICK);
-		ide_kick(ac);
+		ide_kick_internal(ac);
 	}
 	return DDI_INTR_CLAIMED;
 }

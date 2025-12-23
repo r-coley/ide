@@ -22,7 +22,6 @@
 #include <sys/param.h>
 #include <sys/fdisk.h>
 #include <sys/mkdev.h>
-#include <sys/varargs.h>
 #include <sys/xdebug.h>
 #include <sys/kdebugger.h>
 
