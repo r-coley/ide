@@ -30,8 +30,8 @@
 
 extern 	ata_ctrl_t ata_ctrl[];
 extern	int 	atadebug;
-extern	int 	ata_force_polling;
-extern	int 	atapi_force_polling;
+extern	int 	ata_intr_mode;
+extern	int 	atapi_intr_mode;
 extern 	ata_unit_t ata_unit[];
 extern	u32_t req_seq;
 

@@ -65,33 +65,64 @@ ide_watchdog(caddr_t arg)
 		r->wdog_stuck++;
 	}
 
+
+/*
+ * If the device is not busy and not reporting ERR, but is still
+ * asserting DRQ with no forward progress, we can wedge forever
+ * waiting for a completion interrupt that will never come.
+ * Proactively recover from this "DRQ stuck" state.
+ */
+if (r->wdog_stuck > 5 &&
+    !(ast & ATA_SR_BSY) &&
+    (ast & ATA_SR_DRQ) &&
+    !(ast & (ATA_SR_ERR|ATA_SR_DWF)) &&
+    err == 0) {
+	printf("ide_watchdog: DRQ stuck (lba=%ld) ST=%02x ERR=%02x\n",
+		r->lba_cur, ast, err);
+	ata_softreset_ctrl(ac);
+	ata_rescueit(ac);
+	return;
+}
+
 	if (r->wdog_stuck > 50) {
 		printf("ide_watchdog: timeout waiting for completion (lba=%ld) ST=%02x ERR=%02x\n", r->lba_cur,ast,err);
 		ata_rescueit(ac);
 		return;
 	}
 
-	s=splbio();
-	if (r->chunk_left > 0 && r->sectors_left > 0) {
-		BUMP(ac,wd_serviced);
-		ide_arm_watchdog(ac,HZ/10);
-		splx(s);
-		return;	
-	}
-	if (r->chunk_left == 0 && r->sectors_left > 0) {
-		BUMP(ac,wd_rekicked);
-		ata_program_next_chunk(ac, r, HZ/8);
-		splx(s);
-		return;
-	}
-	if (r->chunk_left == 0 && r->sectors_left == 0) {
-		BUMP(ac,eoc_polled);
-		ata_finish_current(ac, EOK, 12);
-		splx(s);
-		ide_kick(ac);
-        	return;
-	}
+
+s=splbio();
+if (r->chunk_left > 0 && r->sectors_left > 0) {
+	BUMP(ac,wd_serviced);
 	splx(s);
+	/* In POLL mode, keep driving the state machine from the watchdog. */
+	if (!AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
+		ide_poll_engine(ac);
+		if (q->cur == NULL) return;
+	}
+	ide_arm_watchdog(ac,HZ/10);
+	return;	
+}
+if (r->chunk_left == 0 && r->sectors_left > 0) {
+	BUMP(ac,wd_rekicked);
+	ata_program_next_chunk(ac, r, HZ/8);
+	splx(s);
+	if (!AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
+		ide_poll_engine(ac);
+		if (q->cur == NULL) return;
+	}
+	ide_arm_watchdog(ac,HZ/10);
+	return;
+}
+if (r->chunk_left == 0 && r->sectors_left == 0) {
+	BUMP(ac,eoc_polled);
+	ata_finish_current(ac, EOK, 12);
+	splx(s);
+	ide_kick(ac);
+        	return;
+}
+splx(s);
+
 }
 
 void
@@ -142,6 +173,7 @@ ide_kick_internal(ata_ctrl_t *ac)
 {
 	ata_ioque_t *q = ac->ioque;
 	int 	s, do_start=0;
+	u8_t	st;
 
 	ATADEBUG(5,"ide_kick_internal()\n");
 
@@ -153,6 +185,12 @@ ide_kick_internal(ata_ctrl_t *ac)
 	}
 	AC_CLR_FLAG(ac,ACF_PENDING_KICK);
 	splx(s);
+
+	st=inb(ATA_ALTSTATUS_O(ac));
+	if (st & ATA_SR_DRQ) {
+		AC_SET_FLAG(ac,ACF_PENDING_KICK);
+		return;
+	}
 
         if (do_start) ide_start(ac);
 

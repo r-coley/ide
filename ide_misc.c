@@ -2,11 +2,14 @@
 #include <stdarg.h>
 #include <sys/cmn_err.h>
 
+extern void ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st);
+
 #define BS	0x08
 
 extern char 	putbuf[];
 extern int	putbufsz;
 extern int	putbufndx;
+extern int	ata_debug_console;
 extern short	prt_where;
 
 extern int  dbg_getchar();
@@ -18,14 +21,46 @@ void
 ATADEBUG(int lvl, char *fmt, ...) 
 {
 	va_list ap;
-	int	old_prt_where=prt_where;
+	char buf[256];
+	int i;
 
-	if (atadebug < lvl || fmt == NULL) return;
+	if (atadebug < lvl || fmt == NULL)
+		return;
 
-    	va_start(ap, fmt);
-    	kv_vsnprintf(NULL, (size_t)-1, fmt, ap);
-    	va_end(ap);
-    	return ;
+	va_start(ap, fmt);
+	(void)vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	/* Ensure newline termination for /dev/osm consumption */
+	for (i = 0; i < (int)sizeof(buf) && buf[i] != '\0'; i++)
+		;
+	if (i == 0 || buf[i - 1] != '\n') {
+		if (i < (int)sizeof(buf) - 1) {
+			buf[i++] = '\n';
+			buf[i] = '\0';
+		} else {
+			buf[sizeof(buf) - 2] = '\n';
+			buf[sizeof(buf) - 1] = '\0';
+		}
+	}
+
+	/*
+	 * Write to putbuf directly so debug is available via /dev/osm
+	 * without relying on prt_where routing (avoids interleaving issues).
+	 * One wakeup per message.
+	 */
+	{
+		int sp = splhi();
+		for (i = 0; buf[i] != '\0'; i++)
+			putbuf[putbufndx++ % putbufsz] = buf[i];
+		splx(sp);
+	}
+
+	wakeup((caddr_t)putbuf);
+
+	/* Optional console mirroring */
+	if (ata_debug_console)
+		printf("%s", buf);
 }
 
 void
@@ -134,10 +169,12 @@ ata_attach(int ctrl)
 
 	if (!AC_HAS_FLAG(ac,ACF_PRESENT)) return;
 
-	if (ata_force_polling == 0) {
+	if (ata_intr_mode || atapi_intr_mode) {
 		RegisterIRQ(ac->irq,&ataintr, SPL5, INTR_TRIGGER_EDGE);
 		AC_SET_FLAG(ac,ACF_INTR_MODE);
 	}
+	if (ata_intr_mode) printf("ATA in intr mode\n");
+	if (atapi_intr_mode) printf("ATAPI in intr mode\n");
 	ata_softreset_ctrl(ac);
 	for (drive = 0; drive <= 1; drive++) {
 		ata_unit_t *u = ac->drive[drive];
@@ -295,7 +332,7 @@ ata_probe_unit(ata_ctrl_t *ac, u8_t drive)
 	if (u->devtype & DEV_ATAPI) U_SET_FLAG(u,UF_ATAPI);
 
 	if (ata_identify(ac, drive) != 0) return ENXIO;
-
+ 
 	ac->tmo_id    = 0;
 	ac->tmo_ticks = drv_usectohz(2000000); /* 2s is sane for PIO */
 
@@ -507,6 +544,7 @@ ata_putblock(dev_t dev, daddr_t blkno, caddr_t buf, u32_t count)
 	bcopy(buf, bp->b_un.b_addr, count);
 	atastrategy(bp);
 	iowait(bp);
+
 	rc = (bp->b_flags & B_ERROR) ? EIO : 0;
 	brelse(bp);
 	return rc;
@@ -546,58 +584,138 @@ bok(struct buf *bp, int resid)
 void
 ide_poll_engine(ata_ctrl_t *ac)
 {
-	ata_ioque_t *q = ac ? ac->ioque : 0;
-	ata_req_t   *r = q ? q->cur : 0;
+	ata_ioque_t *q;
+	ata_req_t   *r;
 	u8_t	ast;
+	int		poll_burst;
+	int		burst_done;
 
-	if (!r) return;
+	q = ac ? ac->ioque : 0;
+	r = q ? q->cur : 0;
 
-	if (!AC_HAS_FLAG(ac, ACF_BUSY)) return;
+	if (!r)
+		return;
+
+	/* Never run the poll engine in interrupt mode */
+	if (AC_HAS_FLAG(ac, ACF_INTR_MODE))
+		return;
 
 	AC_SET_FLAG(ac, ACF_POLL_RUNNING);
 
-	/* drive the state machine until we either need to yield or finish */
-	do {
-		/* tiny yeild to avoid a hot loop if the device is stll busy */
+	/* Max number of sectors to service per poll entry (avoid watchdog-only progress) */
+	poll_burst = 32;
+	burst_done = 0;
+
+	/* Drive the state machine until we either need to yield or finish */
+	for (;;) {
+		/* Tiny yield to avoid a hot loop if the device is still busy */
 		drv_usecwait(2);
 
-		ata_err(ac,&ast,0);
-		ATADEBUG(5,"poll: ST=%02x\n",ast);
-		if (ast & ATA_SR_BSY) continue;
+		ata_err(ac, &ast, 0);
+		ATADEBUG(5, "poll: ST=%02x\n", ast);
+
+		if (ast & ATA_SR_BSY)
+			continue;
 
 		if (ast & ATA_SR_ERR) {
-			ata_finish_current(ac,EIO,__LINE__);
-			ide_kick(ac);/*NEW*/
+			ata_finish_current(ac, EIO, __LINE__);
+			ide_kick(ac);
 			break;
 		}
 
 		if (ast & ATA_SR_DRQ) {
-			if (ata_data_phase_service(ac,r) < 0) {
+			/* Progress: reset DRQ wait budget */
+			r->await_drq_ticks = HZ * 2;
+
+			if (ata_data_phase_service(ac, r) < 0) {
 				ata_finish_current(ac, EIO, __LINE__);
-				ide_kick(ac);/*NEW*/
+				ide_kick(ac);
 				break;
 			}
 
+			/* Count one sector serviced */
+			burst_done++;
+
+			/*
+			 * If we have finished the programmed block (chunk_left == 0),
+			 * handle end-of-chunk bookkeeping now (DRQ may remain asserted
+			 * until status settles). Do not yield early on burst budget in
+			 * this case, or we can leave the device in a DRQ state and trip
+			 * the DRQ-clear check later.
+			 */
 			if (r->chunk_left == 0) {
+				/* End of programmed block: require BSY|DRQ to drop before next cmd */
+				{
+					u8_t st2, er2;
+					if (ata_wait(ac, 0, (ATA_SR_BSY|ATA_SR_DRQ), 50000, &st2, &er2) != 0) {
+						cmn_err(CE_WARN, "%s: DRQ did not clear after data phase (st=%02x err=%02x)",
+							Cstr(ac), st2, er2);
+						ata_finish_current(ac, EIO, __LINE__);
+						ide_kick(ac);
+						break;
+					}
+				}
+
 				if (r->sectors_left > 0) {
-					ata_program_next_chunk(ac,r,HZ/8);
+					ata_program_next_chunk(ac, r, HZ/8);
 				} else {
-					ata_finish_current(ac,0,__LINE__);
-					ide_kick(ac);/*NEW*/
+					ata_finish_current(ac, 0, __LINE__);
+					ide_kick(ac);
 					break;
 				}
+				continue;
 			}
+
+			/* Still inside this programmed block; yield after a burst */
+			if (burst_done >= poll_burst)
+				break;
+
+			/* PIO MULTIPLE: keep servicing while chunk_left > 0 */
 			continue;
 		}
-
-		/* No BSY, no DRQ, no ERR: command may have completed with
-		 * no data */
-		if (r->sectors_left == 0 && r->chunk_left == 0) {
-			ata_finish_current(ac,0,__LINE__);
-			ide_kick(ac);/*NEW*/
+		/* Inter-sector gap in multi-sector PIO (command still active) */
+		if (r->chunk_left > 0 && r->sectors_left > 0) {
+			if (r->await_drq_ticks > 0) {
+				r->await_drq_ticks--;
+				continue;
+			}
+			cmn_err(CE_WARN,
+			    "%s: POLL DRQ timeout (st=%02x) lba=%lu secleft=%lu chunkleft=%lu",
+			    Cstr(ac), ast, (u32_t)r->lba_cur, (u32_t)r->sectors_left,
+			    (u32_t)r->chunk_left);
+			ata_finish_current(ac, EIO, __LINE__);
+			ide_kick(ac);
 			break;
 		}
-	} while (AC_HAS_FLAG(ac, ACF_PENDING_KICK));
+
+		/* Waiting for first DRQ after issuing a command */
+		if (r->sectors_left > 0 && r->chunk_left == 0) {
+			if (r->await_drq_ticks > 0) {
+				r->await_drq_ticks--;
+				continue;
+			}
+			cmn_err(CE_WARN,
+			    "%s: POLL no progress (st=%02x) lba=%lu secleft=%lu",
+			    Cstr(ac), ast, (u32_t)r->lba_cur, (u32_t)r->sectors_left);
+			ata_finish_current(ac, EIO, __LINE__);
+			ide_kick(ac);
+			break;
+		}
+
+		/* Completion edge in POLL mode */
+		if (r->sectors_left == 0 && r->chunk_left == 0) {
+			ata_finish_current(ac, 0, __LINE__);
+			ide_kick(ac);
+			break;
+		}
+
+		/*
+		 * POLL mode needs to emulate the "completion interrupt" edge
+		 * for cases where commands complete with no DRQ/data phase.
+		 */
+		ata_service_irq(ac, r, ast);
+		continue;
+	}
 
 	if (AC_HAS_FLAG(ac, ACF_PENDING_KICK) &&
 	    !AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
@@ -605,7 +723,7 @@ ide_poll_engine(ata_ctrl_t *ac)
 		ide_kick_internal(ac);
 	}
 
-	AC_CLR_FLAG(ac,ACF_POLL_RUNNING);
+	AC_CLR_FLAG(ac, ACF_POLL_RUNNING);
 }
 
 /*

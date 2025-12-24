@@ -1,5 +1,8 @@
 #include "ide.h"
 
+/* Debug helper: synchronous REQUEST SENSE for async error paths. */
+int atapi_request_sense_now(ata_ctrl_t *ac, int drive, u8_t *sense, int sense_len);
+
 /*
  * Decode and print ATAPI REQUEST SENSE buffer.
  * This is primarily for debugging/logging; it does not change behavior.
@@ -723,7 +726,7 @@ atapi_request(ata_ctrl_t *ac, ata_req_t *r, int arm_ticks)
 	dir = r->is_write ? 0 : 1;
 
 	/* ---------- Interrupt-driven path ---------- */
- 	if (AC_HAS_FLAG(ac, ACF_INTR_MODE) && !atapi_force_polling) {
+ 	if (AC_HAS_FLAG(ac, ACF_INTR_MODE) && !atapi_intr_mode) {
 		int s;
 
 		avail = r->sectors_left * blksz;
@@ -870,11 +873,103 @@ atapi_send_packet(ata_ctrl_t *ac, u8_t drive, u8_t *cdb, int cdb_len)
 void
 atapi_handle_error(ata_ctrl_t *ac,ata_req_t *r,u8_t st)
 {
+	u8_t    sense18[18];
+	int     got_sense;
+	ata_unit_t *u;
+	u8_t    sk, asc, ascq;
+
+	/*
+	 * Capture REQUEST SENSE on any ATAPI error so failures like raw ZIP
+	 * writes (often mapped to ENXIO) become diagnosable.
+	 *
+	 * NOTE: This is intended primarily for debugging. It is synchronous and
+	 * may busy-wait briefly; keep it simple and bounded.
+	 */
+	got_sense = 0;
+	u = 0;
+	if (r && ac) {
+		u = ac->drive[r->drive];
+		if (u) {
+			bzero((caddr_t)sense18, sizeof(sense18));
+			/* reuse the unit's persistent sense buffer as well */
+			bzero((caddr_t)u->sense, sizeof(u->sense));
+			/* Try to fetch sense; ignore failures. */
+			if (atapi_request_sense_now(ac, r->drive, sense18, sizeof(sense18)) == 0) {
+				bcopy((caddr_t)sense18, (caddr_t)u->sense,
+				      (sizeof(u->sense) < sizeof(sense18)) ? sizeof(u->sense) : sizeof(sense18));
+				got_sense = 1;
+			}
+		}
+	}
+
+	if (got_sense) {
+		sk   = sense18[2] & 0x0f;
+		asc  = sense18[12];
+		ascq = sense18[13];
+		printf("%s: ATAPI error: op=%02x st=%02x err=%02x SK=%02x ASC=%02x ASCQ=%02x\n",
+			Cstr(ac), (r && r->cdb) ? r->cdb[0] : 0xff,
+			st, (u8_t)inb(ATA_ERROR_O(ac)), sk, asc, ascq);
+		/* Also emit the friendly decoder line (already present in this file). */
+		atapi_decode_sense(sense18, sizeof(sense18));
+	} else {
+		printf("%s: ATAPI error: op=%02x st=%02x err=%02x (no sense)\n",
+			Cstr(ac), (r && r->cdb) ? r->cdb[0] : 0xff,
+			st, (u8_t)inb(ATA_ERROR_O(ac)));
+	}
+
 	r->ast = st;
 	r->err = inb(ATA_ERROR_O(ac));
 	r->atapi_phase = ATAPI_PHASE_ERROR;
 	ata_finish_current(ac, EIO, __LINE__);
 	ide_kick(ac); /*NEW*/
+}
+
+/*
+ * Issue ATAPI REQUEST SENSE (6) synchronously.
+ * Returns 0 on success, non-zero on failure.
+ * C89: declarations at top, no VLAs.
+ */
+int
+atapi_request_sense_now(ata_ctrl_t *ac, int drive, u8_t *sense, int sense_len)
+{
+	u8_t  cdb[12];
+	int   cdblen;
+	u8_t  st;
+	u16_t bc;
+	u16_t want;
+	u16_t wds;
+	int   w;
+
+	if (ac == 0 || sense == 0 || sense_len <= 0)
+		return EINVAL;
+
+	/* Fixed format sense is 18 bytes; request at least that when possible. */
+	want = (u16_t)((sense_len >= 18) ? 18 : sense_len);
+
+	cdblen = build_cdb_pkt(CDB_REQUEST_SENSE, (u8_t *)cdb, (u32_t)0, (u32_t)want);
+	if (ata_sel(ac, (u8_t)drive, 0) != 0)
+		return EIO;
+
+	/* Program expected byte count and send PACKET. */
+	bc = want;
+	atapi_dosend_packet(ac, (u8_t)drive, bc, __LINE__);
+	if (ata_wait(ac, ATA_SR_DRQ, ATA_SR_BSY, 200000L, 0, 0) != 0)
+		return EIO;
+
+	atapi_send_cdb(ac, cdb, cdblen, __LINE__);
+
+	/* Wait for DRQ to read sense data or ERR. */
+	if (ata_wait(ac, ATA_SR_DRQ, ATA_SR_ERR, 500000L, 0, 0) != 0)
+		return EIO;
+
+	/* Read sense payload. */
+	wds = (u16_t)((int)(want + 1) >> 1);
+	for (w = 0; w < (int)wds; w++)
+		*(((u16_t *)sense) + w) = inw(ATA_DATA_O(ac));
+
+	/* Final status: wait for BSY/DRQ to clear and sample STATUS. */
+	(void)ata_wait(ac, 0, ATA_SR_BSY | ATA_SR_DRQ, 500000L, &st, 0);
+	return 0;
 }
 
 /* Command phase: CoD=1, IO=0 send the CDB if not already sent. */

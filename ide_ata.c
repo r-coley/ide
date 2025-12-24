@@ -48,28 +48,66 @@ ata_delay400(ata_ctrl_t *c)
 	(void)inb(ATA_ALTSTATUS_O(c));	/*Force delay*/
 }
 
+/*
+ * Drain final command status after last PIO data transfer.
+ * Some devices leave DRQ asserted briefly after the final data word.
+ * We must not treat the request as complete until we observe !BSY && !DRQ
+ * (or an error).
+ *
+ * Returns 0 on success, -1 on error/timeout.
+ */
+static int
+ata_drain_final_status(ata_ctrl_t *ac)
+{
+	u8_t st;
+	int i;
+
+	/* 400ns settle */
+	(void)inb(ATA_ALTSTATUS_O(ac));
+
+	for (i = 0; i < 1000; i++) {
+		st = inb(ATA_STATUS_O(ac));
+
+		if (st & (ATA_SR_ERR | ATA_SR_DWF))
+			return -1;
+
+		if (!(st & ATA_SR_BSY) && !(st & ATA_SR_DRQ))
+			return 0;
+
+		drv_usecwait(1);
+	}
+	return -1;
+}
+
+
 int
 ata_wait(ata_ctrl_t *ac, u8_t must_set, u8_t must_clear, long usec, u8_t *st, u8_t *err)
 {
-	u8_t s;
+	u8_t s = 0;
 	long i;
 
-	if (err) *err=0;
+	if (err)
+		*err = 0;
+
 	for (i = 0; i <= usec; ++i) {
 		s = inb(ATA_ALTSTATUS_O(ac));
 		if (((s & must_set) == must_set) && ((s & must_clear) == 0)) {
-			if (st) *st = s;
-			if ((s & ATA_SR_ERR) && err) 
+			if (st)
+				*st = s;
+			if ((s & ATA_SR_ERR) && err)
 				*err = inb(ATA_ERROR_O(ac));
 			return 0;
 		}
 		drv_usecwait(1);
 	}
-	if (st) *st = s;
-	if ((s & ATA_SR_ERR) && err) 
+
+	if (st)
+		*st = s;
+	if ((s & ATA_SR_ERR) && err)
 		*err = inb(ATA_ERROR_O(ac));
-	return EIO;
+	return -1;
 }
+
 
 int
 ata_identify(ata_ctrl_t *ac, int drive)
@@ -177,7 +215,7 @@ ata_dump_stats(void)
 
 		if (!AC_HAS_FLAG(ac,ACF_PRESENT)) continue;
 			
-		printf("ATA%d: [%08x] intrmode=%d flag=%08x present(%d,%d) turnon=%lu turnoff=%lu\n",
+		printf("ATA%d[%08x]: intrmode=%d flag=%08x present(%d,%d) turnon=%lu turnoff=%lu\n",
 			ctrl, ac, AC_HAS_FLAG(ac,ACF_INTR_MODE),ac->flags,
 			u0 ? U_HAS_FLAG(u0,UF_PRESENT) : 0,
 			u1 ? U_HAS_FLAG(u1,UF_PRESENT) : 0,
@@ -244,17 +282,29 @@ ata_enable_pio_multiple(ata_ctrl_t *ac, u8_t drive, u8_t multi)
 void
 ata_negotiate_pio_multiple(ata_ctrl_t *ac, u8_t drive)
 {
+    ata_unit_t *u;
     u8_t target = (ATA_USE_MAX_MULTIPLE ? 16 : 8);
     u8_t n;
+
+    /*
+     * IMPORTANT:
+     *  - POLL mode chunking uses per-unit u->pio_multi (see ata_request()).
+     *  - Some other paths consult ac->pio_multi.
+     *
+     * So, when SET MULTIPLE MODE succeeds we must update BOTH.
+     */
+    u = (ac && drive < 2) ? ac->drive[drive] : NULL;
     if (target > 16) target = 16;
     if (target < 2)  target = 2;
 
     for (n = target; n >= 2; n >>= 1) {
 	if (ata_enable_pio_multiple(ac,drive,n) == 0) {
+            if (u) u->pio_multi = n;
             ac->pio_multi = n;
             return;
         }
     }
+    if (u) u->pio_multi = 1;
     ac->pio_multi = 1;
     ATADEBUG(1, "%s: PIO multiple not supported, using single-sector\n",
 		Cstr(ac));
@@ -342,7 +392,7 @@ pio_one_sector(ata_ctrl_t *ac, ata_req_t *r)
 	r->xfer_off += ATA_SECSIZE;
 	if (r->chunk_left >= 0)   r->chunk_left--;
 	if (r->sectors_left >= 0) r->sectors_left--;
-	ATADEBUG(3,"pio_one_sector done: xfer_off=%08x chunk_left=%d sectors_left=%d\n", r->xfer_off,r->chunk_left,r->sectors_left);
+/*	ATADEBUG(3,"pio_one_sector done: xfer_off=%08x chunk_left=%d sectors_left=%d\n", r->xfer_off,r->chunk_left,r->sectors_left);*/
 	return 0;
 }
 
@@ -396,8 +446,14 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 		/* No more sectors? we're done */
 		if (r->sectors_left == 0) {
 			if (!r->is_write) {
-				ata_finish_current(ac, EOK, __LINE__);
-				ide_kick(ac); /*NEW*/
+				/* READ completes at last data phase; ensure DRQ/BSY have dropped */
+				if (ata_drain_final_status(ac) < 0) {
+					ata_finish_current(ac, EIO, __LINE__);
+					ide_kick(ac); /*NEW*/
+				} else {
+					ata_finish_current(ac, EOK, __LINE__);
+					ide_kick(ac); /*NEW*/
+				}
 			}
 			/* 
 			 * For writes do not finish here; we expect a 
@@ -408,8 +464,21 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 			return;
 		}
 
-		/* Otherwise queue next block */
-		ata_program_next_chunk(ac,r,HZ/8);
+		/* Otherwise: if we're still in the current ATA command (chunk_left > 0),
+		 * do NOT issue a new command. Just wait for the next DRQ edge.
+		 * When chunk_left reaches 0, the current command should be complete; drain
+		 * final status, then either start the next chunk or finish the request.
+		 */
+		if (r->chunk_left > 0) {
+			return;
+		}
+		{
+			u8_t st2 = 0, er2 = 0;
+			/* ensure command completion before issuing a new one */
+			(void)ata_wait(ac, 0, ATA_SR_BSY|ATA_SR_DRQ, 200000, &st2, &er2);
+		}
+		/* Start next chunk (new command) for remaining sectors */
+		ata_program_next_chunk(ac, r, HZ/8);
 		return;
 	}	
 
@@ -558,7 +627,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 		n = r->sectors_left;
 		if (n > (u32_t)u->pio_multi) n = (u32_t)u->pio_multi;
 		if (n == 0) return;
-		n=1;
+		/* POLL mode: allow multi-sector PIO up to u->pio_multi */
 	}
 
 	bytes = (size_t)n << 9; /* * 512U */
@@ -692,46 +761,38 @@ if (bp) {
 int
 ata_data_phase_service(ata_ctrl_t *ac, ata_req_t *r)
 {
-	u8_t 	ast;
-	int 	rc=0, count, i;
+	u8_t ast;
+	int rc = 0;
 
+	/* point xptr at the current transfer offset */
 	r->xptr = r->addr + r->xfer_off;
 
 	/* Wait briefly for BSY to clear and DRQ to assert */
-	if (ata_wait(ac,ATA_SR_DRQ|ATA_SR_DRDY, ATA_SR_BSY, 10000, &ast, 0)) {
+	if (ata_wait(ac, ATA_SR_DRQ|ATA_SR_DRDY, ATA_SR_BSY, 10000, &ast, 0)) {
 		ATADEBUG(2,"ata_data_phase: DRQ wait timeout %02x\n",ast);
 		r->err = ast;
 		return -1;
 	}
 
+	/* small settle delay */
 	drv_usecwait(10);
 
-	if (AC_HAS_FLAG(ac,ACF_INTR_MODE))
-		count = 1;
-	else
-		count = (r->chunk_left != 0) ? r->chunk_left : 1;
-
-	for (i = 0; i < count; i++) {
-		if (pio_one_sector(ac, r) != 0) {
-			ATADEBUG(1,"ata_data_phase: pio_one_sector failed\n");
-			rc = -1;
-			break;
-		}
-
-		/* derive from bytes already transferred to avoid drift */
-		r->lba_cur = r->lba + (r->xfer_off >> 9);
-
-		if (!AC_HAS_FLAG(ac,ACF_INTR_MODE)) {
-			if (ata_wait(ac, ATA_SR_DRDY, 
-				ATA_SR_BSY|ATA_SR_DRQ, 10000, &ast, 0)) {
-				ATADEBUG(2,"ata_data_phase: DRQ clear timeout %02x\n", ast);
-				rc = -1;
-				break;
-			}
-		}
+	/* Consume exactly ONE 512B data phase per call in POLL mode.
+	 * Multi-sector PIO commands re-assert DRQ per sector; we must not
+	 * assume we can read multiple sectors back-to-back without waiting
+	 * for the next DRQ edge.
+	 */
+	if (pio_one_sector(ac, r) != 0) {
+		ATADEBUG(1,"ata_data_phase: pio_one_sector failed\n");
+		rc = -1;
 	}
+
+	/* derive from bytes already transferred to avoid drift */
+	r->lba_cur = r->lba + (r->xfer_off >> 9);
+
 	return rc;
 }
+
 
 void
 ata_prime_write(ata_ctrl_t *ac, ata_req_t *r)

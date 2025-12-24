@@ -169,6 +169,17 @@ atastrategy(struct buf *bp)
 	u32_t	base, len, lba, left;
 	char	*addr;
 
+	/*
+	 * SVR4 buffer semantics:
+	 * A buffer may be re-used by the buffer cache for multiple I/Os.
+	 * The strategy routine must clear completion/error state before
+	 * queuing a new request, otherwise the waiter can observe stale
+	 * B_DONE/B_ERROR and/or stale b_error/b_resid.
+	 */
+	bp->b_flags &= ~(B_DONE | B_ERROR);
+	bp->b_error = 0;
+	bp->b_resid = 0;
+
         ATADEBUG(1,"atastrategy(%s) %s lba=%lu nsec=%lu flags=%x\n", 
 		Dstr(dev), 
 		(bp->b_flags&B_READ)?"READ":"WRITE",
@@ -219,14 +230,30 @@ ataread(dev_t dev, struct uio *uiop, cred_t *crp)
 	int 	fdisk = ATA_PART(dev),
 		slice = ATA_SLICE(dev);
 	ata_unit_t *u = &ata_unit[ATA_UNIT(dev)];
+	daddr_t	maxb;
+	u32_t	blksz;
+	u32_t	bsz512;
 
 	ATADEBUG(1,"ataread(%s)\n",Dstr(dev));
+
+	/*
+	 * Raw ATAPI devices (e.g. ZIP) may not have a valid VTOC/slice.
+	 * For such devices, bound physiock() by the discovered media size.
+	 */
+	if (U_HAS_FLAG(u,UF_ATAPI)) {
+		blksz = u->atapi_blksz ? u->atapi_blksz : 2048;
+		bsz512 = blksz >> 9;
+		if (bsz512 == 0) bsz512 = 1;
+		maxb = (daddr_t)(u->atapi_blocks * bsz512);
+	} else {
+		maxb = (daddr_t)(u->fd[fdisk].slice[slice].p_size);
+	}
 
 	return physiock(atabreakup, 
 			NULL, 
 			dev, 
 			B_READ, 
-			(daddr_t)(u->fd[fdisk].slice[slice].p_size),
+			maxb,
 			uiop);
 }
 
@@ -236,14 +263,30 @@ atawrite(dev_t dev, struct uio *uiop, cred_t *crp)
 	int 	fdisk = ATA_PART(dev),
 		slice = ATA_SLICE(dev);
 	ata_unit_t *u = &ata_unit[ATA_UNIT(dev)];
+	daddr_t	maxb;
+	u32_t	blksz;
+	u32_t	bsz512;
 
 	ATADEBUG(1,"atawrite(%s)\n",Dstr(dev));
+
+	/*
+	 * Raw ATAPI devices (e.g. ZIP) may not have a valid VTOC/slice.
+	 * For such devices, bound physiock() by the discovered media size.
+	 */
+	if (U_HAS_FLAG(u,UF_ATAPI)) {
+		blksz = u->atapi_blksz ? u->atapi_blksz : 2048;
+		bsz512 = blksz >> 9;
+		if (bsz512 == 0) bsz512 = 1;
+		maxb = (daddr_t)(u->atapi_blocks * bsz512);
+	} else {
+		maxb = (daddr_t)(u->fd[fdisk].slice[slice].p_size);
+	}
 
 	return physiock(atabreakup, 
 			NULL, 
 			dev, 
 			B_WRITE, 
-			(daddr_t)(u->fd[fdisk].slice[slice].p_size),
+			maxb,
 			uiop);
 }
 
@@ -611,12 +654,6 @@ ataintr(int irq)
 	if (!AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
 		BUMP(ac,irq_spurious);
 		return DDI_INTR_UNCLAIMED;
-	}
-
-	if (atapi_force_polling) {
-		inb(ATA_ALTSTATUS_O(ac));
-		BUMP(ac,irq_atapi_ignored);
-		return DDI_INTR_CLAIMED;
 	}
 
 	if (!r) { 
