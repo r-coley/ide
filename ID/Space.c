@@ -10,8 +10,9 @@ int	ata_major = ATAMAJOR0;		/* major device number */
 /* Exported globals expected by SVR4 */
 int 	atadevflag = D_NEW | D_DMA;
 int	atadebug   = 0;
-int 	ata_force_polling = 1;
-int 	atapi_force_polling = 1;
+int 	ata_intr_mode = 1;
+int 	atapi_intr_mode = 1;
+int	ata_debug_console = 0;
 
 ata_ctrl_t ata_ctrl[ATA_MAX_CTRL] = {
 	{ 0x1F0, 14, ACF_NONE }, /* c0 (Primary)   */
