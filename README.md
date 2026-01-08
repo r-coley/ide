@@ -8,6 +8,8 @@ int  atapi_intr_mode=0;   /* 1 = Interrupt,  0 = Polling */
 
 
 A standard UnixWare machine wont have the RegisterIRQ()
+
+
 enum intr_trigger {
         INTR_TRIGGER_INVALID    = -1,
         INTR_TRIGGER_CONFORM    = 0,
