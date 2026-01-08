@@ -9,8 +9,8 @@ int  atapi_intr_mode=0;   /* 1 = Interrupt,  0 = Polling */
 
 A standard UnixWare machine wont have the RegisterIRQ()
 
-
-`enum intr_trigger {
+<br>
+enum intr_trigger {
         INTR_TRIGGER_INVALID    = -1,
         INTR_TRIGGER_CONFORM    = 0,
         INTR_TRIGGER_EDGE       = 1,
@@ -59,5 +59,5 @@ RegisterIRQ(int irq,int (*func)(),int pri,enum intr_trigger le)
 
         /*elcr_show();*/
         return -1;
-}`
+}
 
