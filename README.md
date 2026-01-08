@@ -1,9 +1,13 @@
-ID/Space.c
-==========
-int  atadebug=0;          /* 0=off; 9=full */<br>
-int  ata_intr_mode=0;     /* 1 = Interrupt,  0 = Polling */<br>
-int  atapi_intr_mode=0;   /* 1 = Interrupt,  0 = Polling */<br>
- 
+ID/Space.c<br>
+==========<br>
+
+The following settings in Space.c control whether polling or interrupts are used
+```
+int  atadebug=0;          /* 0=off; 9=full */
+int  ata_intr_mode=0;     /* 1 = Interrupt,  0 = Polling */
+int  atapi_intr_mode=0;   /* 1 = Interrupt,  0 = Polling */
+```
+
 A standard UnixWare machine wont have the RegisterIRQ()
 
 ```
