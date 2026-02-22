@@ -4,6 +4,9 @@
 
 #include "ide.h"
 
+static void ide_kick_soft(caddr_t arg);
+static void ide_schedule_kick(ata_ctrl_t *ac);
+
 void 
 ide_arm_watchdog(ata_ctrl_t *ac, int ticks)
 {
@@ -31,6 +34,28 @@ ide_cancel_watchdog(ata_ctrl_t *ac)
 	}
 }
 
+
+static void
+ide_kick_soft(caddr_t arg)
+{
+	ata_ctrl_t *ac = (ata_ctrl_t *)arg;
+
+	/* clear our deferred kick id before running */
+	ac->kick_id = 0;
+	ide_kick_internal(ac);
+}
+
+static void
+ide_schedule_kick(ata_ctrl_t *ac)
+{
+	if (!ac) return;
+	if (ac->kick_id) return;
+
+	/* schedule immediate soft kick */
+	ac->kick_id = timeout(ide_kick_soft, (caddr_t)ac, 0);
+}
+
+
 void
 ide_watchdog(caddr_t arg)
 {
@@ -39,6 +64,9 @@ ide_watchdog(caddr_t arg)
 	ata_req_t   *r = q ? q->cur : NULL;
 	int	s, er, progress=0;
 	u8_t 	ast, err;
+
+	/* we are running the timeout callback referenced by tmo_id */
+	ac->tmo_id = 0;
 
 	ATADEBUG(3,"ide_watchdog(r=%08x chunk_left=%x sectors_left=%x)\n",
 		r, r ? r->chunk_left : -1, r ? r->sectors_left : -1);
@@ -90,38 +118,33 @@ if (r->wdog_stuck > 5 &&
 		return;
 	}
 
-
-s=splbio();
-if (r->chunk_left > 0 && r->sectors_left > 0) {
-	BUMP(ac,wd_serviced);
-	splx(s);
-	/* In POLL mode, keep driving the state machine from the watchdog. */
-	if (!AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
-		ide_poll_engine(ac);
-		if (q->cur == NULL) return;
+	s=splbio();
+	if (r->chunk_left > 0 && r->sectors_left > 0) {
+		BUMP(ac,wd_serviced);
+		splx(s);
+		/* Do not drive POLL engine from timeout context; schedule a deferred kick instead. */
+		if (!AC_HAS_FLAG(ac, ACF_INTR_MODE))
+			ide_schedule_kick(ac);
+		ide_arm_watchdog(ac,HZ/10);
+		return;	
 	}
-	ide_arm_watchdog(ac,HZ/10);
-	return;	
-}
-if (r->chunk_left == 0 && r->sectors_left > 0) {
-	BUMP(ac,wd_rekicked);
-	ata_program_next_chunk(ac, r, HZ/8);
-	splx(s);
-	if (!AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
-		ide_poll_engine(ac);
-		if (q->cur == NULL) return;
+	if (r->chunk_left == 0 && r->sectors_left > 0) {
+		BUMP(ac,wd_rekicked);
+		ata_program_next_chunk(ac, r, HZ/8);
+		splx(s);
+		if (!AC_HAS_FLAG(ac, ACF_INTR_MODE))
+			ide_schedule_kick(ac);
+		ide_arm_watchdog(ac,HZ/10);
+		return;
 	}
-	ide_arm_watchdog(ac,HZ/10);
-	return;
-}
-if (r->chunk_left == 0 && r->sectors_left == 0) {
-	BUMP(ac,eoc_polled);
-	ata_finish_current(ac, EOK, 12);
-	splx(s);
-	ide_kick(ac);
+	if (r->chunk_left == 0 && r->sectors_left == 0) {
+		BUMP(ac,eoc_polled);
+		ata_finish_current(ac, EOK, 12);
+		splx(s);
+		ide_kick(ac);
         	return;
-}
-splx(s);
+	}
+	splx(s);
 
 }
 
@@ -145,7 +168,7 @@ ide_q_put(ata_ctrl_t *ac, ata_req_t *r)
         ac->nreq++;
 	splx(s);	
 
-	if (start_engine) ide_kick(ac);
+	if (start_engine) ide_schedule_kick(ac);
 }
 
 ata_req_t *

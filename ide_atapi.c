@@ -452,16 +452,33 @@ atapi_test_unit_ready(ata_ctrl_t *ac, u8_t drive)
 
 	cdblen=build_cdb_pkt(CDB_TEST_UNIT_READY,(u8_t *)u->cdb,(u32_t)0,(u32_t)0);
 	rc = atapi_packet(ac,drive,(u8_t *)u->cdb,cdblen,NULL,0,1,(u8_t *)u->sense,sizeof(u->sense),__LINE__);
-	if (rc == 0) {
-		U_SET_FLAG(u,UF_HASMEDIA);
-		return 0;
-	}
+	/*
+	 * Decide whether media is present. Some drives (especially removable ATAPI)
+	 * will report UNIT ATTENTION immediately after insertion; that's not 'no media'.
+	 * Only the explicit 'Not Ready / No medium present' (02/3A/00) clears HASMEDIA.
+	 */
+	{
+		u8_t key = u->sense[2] & 0x0f;
+		u8_t asc = u->sense[12];
+		u8_t ascq = u->sense[13];
 
-	if ((u->sense[2] & 0x0f) == 0x02 && u->sense[12] == 0x3a) {
-		U_CLR_FLAG(u,UF_HASMEDIA);
+		if (rc == 0) {
+			U_SET_FLAG(u, UF_HASMEDIA);
+			return 0;
+		}
+
+		if (key == 0x02 && asc == 0x3a && ascq == 0x00) {
+			U_CLR_FLAG(u, UF_HASMEDIA);
+			return 0;
+		}
+
+		/*
+		 * For UNIT ATTENTION / NOT READY (other than 'no medium') and other transient
+		 * check conditions, treat as media-present and let higher layers retry/read-capacity.
+		 */
+		U_SET_FLAG(u, UF_HASMEDIA);
 		return 0;
 	}
-	return 0;
 }
 
 char *

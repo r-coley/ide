@@ -1,6 +1,7 @@
 #include "ide.h"
 #include <stdarg.h>
 #include <sys/cmn_err.h>
+extern int ata_major;
 
 extern void ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st);
 
@@ -21,8 +22,8 @@ void
 ATADEBUG(int lvl, char *fmt, ...) 
 {
 	va_list ap;
-	char buf[256];
-	int i;
+	char 	buf[256];
+	int 	i, s;
 
 	if (atadebug < lvl || fmt == NULL)
 		return;
@@ -44,23 +45,23 @@ ATADEBUG(int lvl, char *fmt, ...)
 		}
 	}
 
+	/* Optional console mirroring */
+	if (ata_debug_console) {
+		printf("%s", buf);
+		return;
+	}
+
 	/*
 	 * Write to putbuf directly so debug is available via /dev/osm
 	 * without relying on prt_where routing (avoids interleaving issues).
 	 * One wakeup per message.
 	 */
-	{
-		int sp = splhi();
-		for (i = 0; buf[i] != '\0'; i++)
-			putbuf[putbufndx++ % putbufsz] = buf[i];
-		splx(sp);
-	}
+	s = splhi();
+	for (i = 0; buf[i] != '\0'; i++)
+		putbuf[putbufndx++ % putbufsz] = buf[i];
+	splx(s);
 
 	wakeup((caddr_t)putbuf);
-
-	/* Optional console mirroring */
-	if (ata_debug_console)
-		printf("%s", buf);
 }
 
 void
@@ -157,6 +158,7 @@ reset_queue(ata_ctrl_t *ac,int hard)
 	q->cur       = 0;
 	q->state     = AS_IDLE;
 	AC_CLR_FLAG(ac, ACF_BUSY);
+	wakeup((caddr_t)ac->ioque);
 }
 
 void
@@ -173,9 +175,6 @@ ata_attach(int ctrl)
 		RegisterIRQ(ac->irq,&ataintr, SPL5, INTR_TRIGGER_EDGE);
 		AC_SET_FLAG(ac,ACF_INTR_MODE);
 	}
-	if (ata_intr_mode) printf("ATA in intr mode\n");
-	if (atapi_intr_mode) printf("ATAPI in intr mode\n");
-	ata_softreset_ctrl(ac);
 	for (drive = 0; drive <= 1; drive++) {
 		ata_unit_t *u = ac->drive[drive];
 
@@ -201,11 +200,11 @@ ata_read_vtoc(dev_t dev,int part)
 	struct vtoc *v;
 	ata_part_t *fp = &u->fd[part];
 	int 	s;
-	int rootu = ATA_DEV_UNIT(dev);
-	int swapu = ATA_DEV_UNIT(swapdev);
+	int	isataroot = (getmajor(rootdev) == ata_major) ? 1 : 0;
+	int	isataswap = (getmajor(swapdev) == ata_major) ? 1 : 0;
 
-	ATADEBUG(1,"ata_read_vtoc(%s dev=%x) rootu=%x swapu=%x\n",
-		Dstr(dev),BASEDEV(dev),rootu,swapu);
+	ATADEBUG(1,"ata_read_vtoc(%s dev=%x) isataroot=%d isataswap=%d\n",
+		Dstr(dev),BASEDEV(dev),isataroot,isataswap);
 
 	if (U_HAS_FLAG(u,UF_ATAPI)) return 0;
 
@@ -251,11 +250,15 @@ ata_read_vtoc(dev_t dev,int part)
 		fp->slice[s].p_flag = v->v_part[s].p_flag;
 		fp->slice[s].p_start = v->v_part[s].p_start;
 		fp->slice[s].p_size  = v->v_part[s].p_size;
-		if (fp->slice[s].p_tag == V_SWAP &&
+		if (isataroot && isataswap &&
+		    fp->slice[s].p_tag == V_SWAP &&
 		    fp->slice[s].p_flag & V_VALID) {
-				if (swapdev != NODEV && rootu == swapu) {
+				int 	devu = ATA_DEV_UNIT(dev);
+				int 	swapu = ATA_DEV_UNIT(swapdev);
+				dev_t	nswapdev;
+
+				if (devu == swapu && nswap == 0) 
 					nswap = fp->slice[s].p_size;
-				}
 			}
 	}
 
@@ -291,6 +294,8 @@ ata_read_signature(ata_ctrl_t *ac, u8_t drive,u16_t *type)
 	u16_t	dev;
 
 	ATADEBUG(1,"read_signature(drive=%d)\n",drive);
+
+	ata_softreset_ctrl(ac);
 
 	if (ata_sel(ac,drive,0) != 0) return EIO;
 
@@ -445,18 +450,27 @@ ata_pdinfo(dev_t dev)
 		slice = ATA_SLICE(dev),
 		ctrl  = ATA_CTRL(dev),
 		drive = ATA_DRIVE(dev);
-	ata_ctrl_t *ac = &ata_ctrl[ctrl];
-	ata_unit_t *u = ac->drive[drive];
+	ata_ctrl_t *ac;
+	ata_unit_t *u;
 	struct mboot *mboot;
 	struct ipart *ip;
 	struct buf *bp;
 	ata_part_t *fp;
 	int	i, s, rc;
 
+	if (ctrl < 0 || ctrl>ATA_MAX_CTRL) return ENODEV;
+	ac = &ata_ctrl[ctrl];
+	u = ac->drive[drive];
+
 	ATADEBUG(1,"ata_pdinfo(%s, dev=%x) drive=%d part=%d\n",	
 		Dstr(dev),dev,drive,part);
 
 	if (U_HAS_FLAG(u,UF_ATAPI)) return 0;
+
+	/* Assume fdisk table is not valid unless we successfully read and
+	 * recognize an mboot. ataopen/ataclose print this for debugging
+	 */
+	u->fdisk_valid = 0;
 
 	mboot = (struct mboot *)kmem_alloc(DEV_BSIZE,KM_SLEEP);
 	if (!mboot) return ENOMEM;
@@ -475,6 +489,9 @@ ata_pdinfo(dev_t dev)
 		fp->slice[ATA_WHOLE_PART_SLICE].p_size  = fp->nsectors;
 		return 0;
 	}
+
+	/*** We successfully read and recognized an mboot ***/
+	u->fdisk_valid = 1;
 
 	/*** Now copy the others in sequence ***/
 	ip = (struct ipart *)&mboot->parts;
@@ -498,27 +515,47 @@ ata_pdinfo(dev_t dev)
 int 	
 ata_getblock(dev_t dev, daddr_t blkno, caddr_t buf, u32_t count)
 {
-	int	rc;
+	static int busy = 0;
+	int	s, rc;
 	struct buf *bp; 
 
 	ATADEBUG(1,"ata_getblock(%x,%lu,%x,%lu)\n",dev,blkno,buf,count);
 
-	if (!(bp = geteblk())) return EIO;
+	/*
+	 * Serialize ata_getblock() to prevent recursive entry.
+	 * This is required on SVR4 because completion/wakeup paths
+	 * can re-enter while the original call has not unwound
+	 */
+	s=splbio();
+	while (busy)
+		sleep((caddr_t)&busy,PRIBIO);
+	busy=1;
+	splx(s);
 
-	bp->b_dev    = dev;
-	bp->b_edev   = dev;
-	bp->b_error  = 0;
-	bp->b_resid  = 0;
-	bp->b_flags  = B_READ | B_BUSY;
-	bp->b_blkno  = blkno;
-	bp->b_bcount = count;
+	if (!(bp = geteblk()))
+		rc=EIO;
+	else {
+		bp->b_dev    = dev;
+		bp->b_edev   = dev;
+		bp->b_error  = 0;
+		bp->b_resid  = 0;
+		bp->b_flags  = B_READ | B_BUSY;
+		bp->b_blkno  = blkno;
+		bp->b_bcount = count;
 
-	atastrategy(bp);
-	iowait(bp);
+		atastrategy(bp);
+		iowait(bp);
 
-	rc = (bp->b_flags & B_ERROR) ? EIO : 0;
-	bcopy(bp->b_un.b_addr,buf,count);
-	brelse(bp);
+		rc = (bp->b_flags & B_ERROR) ? EIO : 0;
+		if (!rc)
+			bcopy(bp->b_un.b_addr,buf,count);
+		brelse(bp);
+	}
+
+	s = splbio();
+	busy=0;
+	wakeup((caddr_t)&busy);
+	splx(s);
 
 	return rc;
 }
@@ -574,8 +611,12 @@ bok(struct buf *bp, int resid)
 	if (ISABSDEV(bp->b_edev) && !(bp->b_flags & B_READ)) {
 		ata_ctrl_t *ac = &ata_ctrl[ATA_CTRL(bp->b_edev)];
 		u8_t drive = ATA_DRIVE(bp->b_edev);
+		ata_unit_t *u=ac->drive[drive];
+
 		bflush(bp->b_edev);
-		ata_flush_cache(ac,drive);
+		/* FLUSH CACHE (0xE7) is ATA-Only; ATAPI will ABRT it */
+		if (!U_HAS_FLAG(u,UF_ATAPI)) 
+			ata_flush_cache(ac,drive); 
 	}
 	biodone(bp);
 	return 0;
@@ -600,9 +641,18 @@ ide_poll_engine(ata_ctrl_t *ac)
 	if (AC_HAS_FLAG(ac, ACF_INTR_MODE))
 		return;
 
+	/* Prevent recursive entry (watchdog/kick/copyin paths) */
+	if (AC_HAS_FLAG(ac, ACF_POLL_RUNNING)) {
+		AC_SET_FLAG(ac, ACF_PENDING_KICK);
+		return;
+	}
+
 	AC_SET_FLAG(ac, ACF_POLL_RUNNING);
 
-	/* Max number of sectors to service per poll entry (avoid watchdog-only progress) */
+	/*
+	 * Max number of sectors to service per poll entry (avoid 
+	 * watchdog-only progress) 
+	 */
 	poll_burst = 32;
 	burst_done = 0;
 
@@ -614,8 +664,7 @@ ide_poll_engine(ata_ctrl_t *ac)
 		ata_err(ac, &ast, 0);
 		ATADEBUG(5, "poll: ST=%02x\n", ast);
 
-		if (ast & ATA_SR_BSY)
-			continue;
+		if (ast & ATA_SR_BSY) continue;
 
 		if (ast & ATA_SR_ERR) {
 			ata_finish_current(ac, EIO, __LINE__);
@@ -637,24 +686,40 @@ ide_poll_engine(ata_ctrl_t *ac)
 			burst_done++;
 
 			/*
-			 * If we have finished the programmed block (chunk_left == 0),
-			 * handle end-of-chunk bookkeeping now (DRQ may remain asserted
-			 * until status settles). Do not yield early on burst budget in
-			 * this case, or we can leave the device in a DRQ state and trip
+			 * If we have finished the programmed block 
+			 * (chunk_left == 0), handle end-of-chunk bookkeeping 
+			 * now (DRQ may remain asserted until status settles). 
+			 * Do not yield early on burst budget in this case, or 
+			 * we can leave the device in a DRQ state and trip
 			 * the DRQ-clear check later.
 			 */
 			if (r->chunk_left == 0) {
-				/* End of programmed block: require BSY|DRQ to drop before next cmd */
-				{
-					u8_t st2, er2;
-					if (ata_wait(ac, 0, (ATA_SR_BSY|ATA_SR_DRQ), 50000, &st2, &er2) != 0) {
-						cmn_err(CE_WARN, "%s: DRQ did not clear after data phase (st=%02x err=%02x)",
-							Cstr(ac), st2, er2);
-						ata_finish_current(ac, EIO, __LINE__);
-						ide_kick(ac);
-						break;
-					}
+				u8_t st2, er2;
+
+				/*
+				 * End of programmed block: require BSY|DRQ 
+				 * to drop before next cmd 
+				 */
+				if (ata_wait(ac, 0, (ATA_SR_BSY|ATA_SR_DRQ), 50000, &st2, &er2) != 0) {
+					cmn_err(CE_WARN, "%s: DRQ did not clear after data phase (st=%02x err=%02x)",
+						Cstr(ac), st2, er2);
+					ata_finish_current(ac, EIO, __LINE__);
+					ide_kick(ac);
+					break;
 				}
+
+				/*** NEW ***/
+				if (!r->is_write &&
+				   (r->flags & ATA_RF_NEEDCOPY) &&
+				   q->xfer_buf &&
+				   r->chunk_bytes) {
+					caddr_t dst;
+					dst = (caddr_t)r->addr + 
+						(r->xfer_off - r->chunk_bytes);
+					bcopy(q->xfer_buf, dst, r->chunk_bytes);
+					r->flags &= ~ATA_RF_NEEDCOPY;
+				}
+
 
 				if (r->sectors_left > 0) {
 					ata_program_next_chunk(ac, r, HZ/8);
@@ -666,9 +731,8 @@ ide_poll_engine(ata_ctrl_t *ac)
 				continue;
 			}
 
-			/* Still inside this programmed block; yield after a burst */
-			if (burst_done >= poll_burst)
-				break;
+			/* Still inside programmed block; yield after burst */
+			if (burst_done >= poll_burst) break;
 
 			/* PIO MULTIPLE: keep servicing while chunk_left > 0 */
 			continue;

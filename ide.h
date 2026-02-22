@@ -26,6 +26,7 @@
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/buf.h>
+#include <sys/fcntl.h>
 #include <sys/kmem.h>
 #include <sys/uio.h>
 #include <sys/file.h>
@@ -123,10 +124,8 @@
 	do { \
 	(R)->xptr     += ATA_SECSIZE; \
 	(R)->xfer_off += ATA_SECSIZE; \
-	if ((R)->chunk_left >= 0) (R)->chunk_left   -= 1; \
-	else			  (R)->chunk_left    = 0; \
-	if ((R)->sectors_left >= 0) (R)->sectors_left -= 1; \
-	else			    (R)->sectors_left  = 0; \
+	if ((R)->chunk_left > 0) (R)->chunk_left   -= 1; \
+	if ((R)->sectors_left > 0) (R)->sectors_left -= 1; \
 	} while (0)
 
 #define DDI_INTR_UNCLAIMED	0
@@ -158,9 +157,12 @@
 #define AC_SET_FLAG(ac,f)   ((ac)->flags |= (f))
 #define AC_CLR_FLAG(ac,f)   ((ac)->flags &= ~(f))
 
-#define ATA_RF_NEEDCOPY	0x0001
-#define ATA_RF_DONE	0x0002
-#define ATA_RF_CDB_SENT	0x0004
+#define ATA_RF_NEEDCOPY		0x0001
+#define ATA_RF_DONE		0x0002
+#define ATA_RF_CDB_SENT		0x0004
+#define ATA_RF_BOUNCE_WR	0x0008
+
+#define ATA_RF_BOUNCE		(ATA_RF_NEEDCOPY | ATA_RF_BOUNCE_WR)
 
 /* --- Unified device flags --- */
 #define UF_PRESENT		0x0001
@@ -264,6 +266,7 @@ struct ata_ctrl {
 
 	/*** watchdog/timeout ***/
 	int	tmo_id;
+	int	kick_id;	/* deferred kick timeout id */
 	int	tmo_ticks;
 
 	int	sel_drive;
@@ -323,6 +326,10 @@ struct ata_req {
 	u16_t	prev_sectors_left;
 	int	wdog_stuck;
 	caddr_t	xptr;
+
+	u32_t	chunk_off0;
+	u16_t	chunk_nsec0;
+	caddr_t	chunk_base;
 
 	u8_t	cmd;
 	u16_t	atapi_bytes;
@@ -400,6 +407,7 @@ struct ata_counters
 	u32_t	irq_drq_service;
 	u32_t	irq_eoc;
 	u32_t	irq_err;
+	u32_t	irq_flush;
 	u32_t	irq_bsy_skipped;
 	u32_t	irq_atapi_ignored;
 	u32_t	lost_irq_rescued;

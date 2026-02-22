@@ -157,7 +157,7 @@ ata_flush_cache(ata_ctrl_t *ac,u8_t drive)
 {
 	ata_req_t rb, *r=&rb;
 
-	ATADEBUG(1,"ide_flush_cache(%s)\n",Cstr(ac));
+	ATADEBUG(1,"ata_flush_cache(%s)\n",Cstr(ac));
 
 	bzero((caddr_t)r,sizeof(r));
 	r->drive	= drive;
@@ -247,14 +247,48 @@ void
 ata_softreset_ctrl(ata_ctrl_t *ac)
 {
 	int	i, was_enabled = AC_HAS_FLAG(ac,ACF_IRQ_ON);
+	int	saved_drive;
+	int	saved_mode;
+	u8_t	saved_hi4;
+	u16_t	drvhd;
 
 	ATADEBUG(1,"ata_softreset_ctrl(%d)\n",ac->idx);
+
+	/*
+	 * Soft-reset clears the device/head register selection in hardware.
+	 * Preserve our cached selection so we can restore it afterwards, keeping
+	 * the cache and hardware consistent.
+	 */
+	saved_drive = ac->sel_drive;
+	saved_mode  = ac->sel_mode;
+	saved_hi4   = ac->sel_hi4;
 	BUMP(ac,softresets);
 	AC_CLR_FLAG(ac,ACF_IRQ_ON); /* Clear the flag */
 	outb(ATA_DEVCTRL_O(ac), ATA_CTL_SRST | ATA_CTL_NIEN);
 	for(i=0;i<16;i++) ata_delay400(ac);
 	outb(ATA_DEVCTRL_O(ac), ATA_CTL_NIEN); /* deassert SRST */
 	(void)inb(ATA_ALTSTATUS_O(ac));
+
+	/*
+	 * Restore prior device/head selection (if any). We do this after SRST is
+	 * deasserted so subsequent commands that assume a particular selection
+	 * don't accidentally run against drive 0.
+	 */
+	if (saved_drive >= 0) {
+		drvhd = ATA_DH((u8_t)saved_drive,
+			(saved_mode == SEL_LBA28) ? 1 : 0,
+			saved_hi4);
+		outb(ATA_DRVHD_O(ac), drvhd);
+		ata_delay400(ac);
+		ac->sel_drive = saved_drive;
+		ac->sel_mode  = saved_mode;
+		ac->sel_hi4   = saved_hi4;
+	} else {
+		/* No valid cached selection */
+		ac->sel_drive = -1;
+		ac->sel_mode  = 0;
+		ac->sel_hi4   = 0;
+	}
 
 	if (was_enabled) ATA_IRQ_ON(ac);
 }
@@ -388,11 +422,14 @@ pio_one_sector(ata_ctrl_t *ac, ata_req_t *r)
 		for(i=0; i<(ATA_SECSIZE/2); i++)
 			p16[i] = inw(ATA_DATA_O(ac));
 	}
+	XFERINC(r);
+#if 0
 	r->xptr     += ATA_SECSIZE;
 	r->xfer_off += ATA_SECSIZE;
 	if (r->chunk_left >= 0)   r->chunk_left--;
 	if (r->sectors_left >= 0) r->sectors_left--;
-/*	ATADEBUG(3,"pio_one_sector done: xfer_off=%08x chunk_left=%d sectors_left=%d\n", r->xfer_off,r->chunk_left,r->sectors_left);*/
+#endif
+	ATADEBUG(3,"pio_one_sector done: xfer_off=%08x chunk_left=%d sectors_left=%d\n", r->xfer_off,r->chunk_left,r->sectors_left);
 	return 0;
 }
 
@@ -612,11 +649,11 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	caddr_t	user_ptr;
 
 	ATADEBUG(2,"ata_request(Reqid=%ld)\n",r ? r->reqid : 0);
-	if (!r) return;
+	if (!r) return 0;
 
 	if (AC_HAS_FLAG(ac,ACF_INTR_MODE)) {
 		n = (r->sectors_left > 256U) ? 256U : r->sectors_left;
-		if (n == 0) return;
+		if (n == 0) return 0;
 
 		/* Cap sectors to bounce-buffer capacity in interrupt mode */
 		if (q->xfer_buf) {
@@ -626,7 +663,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	} else {
 		n = r->sectors_left;
 		if (n > (u32_t)u->pio_multi) n = (u32_t)u->pio_multi;
-		if (n == 0) return;
+		if (n == 0) return 0;
 		/* POLL mode: allow multi-sector PIO up to u->pio_multi */
 	}
 
@@ -637,23 +674,37 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	r->chunk_left   = (u16_t)n;
 	r->chunk_bytes  = (u32_t)bytes;
 	r->cmd          = multicmd(ac, r->is_write,r->lba_cur,n);
-	r->flags       &= ~ATA_RF_NEEDCOPY;
+
+	/** CHUNK TRACKING **/
+	r->chunk_off0  = r->xfer_off;
+	r->chunk_nsec0 = r->nsec;
+
+	/*r->flags       &= ~(ATA_RF_NEEDCOPY|ATA_RF_BOUNCE_WR);*/
+	r->flags       &= ~ATA_RF_BOUNCE;
+
+#if 0
+	ATADEBUG(1,"%s req=%ld chunk set off0=%lu nsec0=%lu lba=%lu cmd=%02x\n",
+		Cstr(ac),r->reqid,(u32_t)r->chunk_off0,(uint)r->chunk_nsec0,
+		(u32_t)r->lba_cur,(uint)r->cmd);
+#endif
 
 	if (r->is_write) {
-		/* Write: prefer bounce buffer for IRQ path; copy from user if valid */
+		/* Write: prefer bounce buffer for IRQ path; copy from 
+		 * user if valid */
 		if (q->xfer_buf && valid_usr_range((addr_t)r->addr, bytes)) {
-			bcopy((caddr_t)r->addr + r->xfer_off, q->xfer_buf, bytes);
+			bcopy((caddr_t)r->addr+r->xfer_off,q->xfer_buf, bytes);
 			r->xptr = q->xfer_buf;
+			r->flags |= ATA_RF_BOUNCE_WR;
 		} else {
 			/* kernel buffers only */
 			r->xptr = (caddr_t)r->addr + r->xfer_off;
 		}
 	} else {
-		/* Read: receive into bounce buffer when available; copy back later if user VA */
-		if (q->xfer_buf) {
+		/* Read: receive into bounce buffer when available; copy 
+		 * back later if user VA */
+		if (q->xfer_buf && valid_usr_range((addr_t)r->addr, bytes)) {
 			r->xptr = q->xfer_buf;
-			if (valid_usr_range((addr_t)r->addr, bytes))
-				r->flags |= ATA_RF_NEEDCOPY;
+			r->flags |= ATA_RF_NEEDCOPY;
 		} else {
 			r->xptr = (caddr_t)r->addr + r->xfer_off;
 		}
@@ -676,6 +727,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	if (arm_ticks) ide_arm_watchdog(ac,arm_ticks);
 
 	if (!AC_HAS_FLAG(ac,ACF_INTR_MODE)) ide_kick(ac);
+	return 0;
 }
 
 void 
@@ -699,20 +751,20 @@ ata_finish_current(ata_ctrl_t *ac, int err,int place)
 	if (!que) {
 		ATADEBUG(2,"ata_finish_current() que NULL\n");
 	}
-s = splbio();
-r  = que ? que->cur : NULL;
-if (!r) {
-    ATADEBUG(9,"ata_finish(reqid: None)\n");
-    if (que) {
-        que->last_err = err;
-        que->state = AS_IDLE;
-        AC_CLR_FLAG(ac, ACF_BUSY);
-        que->cur = NULL;
-    }
-    splx(s);
-    return;
-}
-ATADEBUG(9,"ata_finish(reqid: %lu)\n",r->reqid);
+	s = splbio();
+	r  = que ? que->cur : NULL;
+	if (!r) {
+    		ATADEBUG(9,"ata_finish(reqid: None)\n");
+    		if (que) {
+        		que->last_err = err;
+        		que->state = AS_IDLE;
+        		AC_CLR_FLAG(ac, ACF_BUSY);
+        		que->cur = NULL;
+    		}
+    		splx(s);
+    		return;
+	}
+	ATADEBUG(9,"ata_finish(reqid: %lu)\n",r->reqid);
 	r->err = err;
 	if (r->flags & ATA_RF_DONE) { splx(s); return; }
 	r->flags |= ATA_RF_DONE;
@@ -744,12 +796,13 @@ ATADEBUG(9,"ata_finish(reqid: %lu)\n",r->reqid);
 	}
 
 	s=splbio();
-AC_CLR_FLAG(ac,ACF_BUSY);
-que->cur = NULL;
-que->state = AS_IDLE;
-que->last_err = r->err;
-splx(s);
-if (bp) {
+	AC_CLR_FLAG(ac,ACF_BUSY);
+	que->cur = NULL;
+	que->state = AS_IDLE;
+	que->last_err = r->err;
+	wakeup((caddr_t)ac->ioque);
+	splx(s);
+	if (bp) {
 		if (err) berror(bp,resid,EIO);
 		else     bok(bp,resid);
 	}
@@ -763,9 +816,54 @@ ata_data_phase_service(ata_ctrl_t *ac, ata_req_t *r)
 {
 	u8_t ast;
 	int rc = 0;
+	ata_ioque_t *q = ac->ioque;
+	u16_t	done = (u16_t)(r->chunk_nsec0 - r->chunk_left);
+	u32_t	rel_bytes = ((u32_t)done) << 9;
+	u32_t	expect_off = r->chunk_off0 + rel_bytes;
+
+#if 0
+	if (r->chunk_left > r->chunk_nsec0) {
+		ATADEBUG(1,"%s BUG req=%ld chunk_left=%lu > chunk_nsec0(%u)\n",
+			Cstr(ac),r->reqid,
+			(u32_t)r->chunk_left,
+			(u32_t)r->chunk_nsec0);
+	}
+	if (r->xfer_off != expect_off) {
+		ATADEBUG(1,"%s WARN req=%ld xfer_off=%lu expect=%lu off0=%lu done=%u left=%u nsec0=%u\n",
+			Cstr(ac),r->reqid,
+			(u32_t)r->xfer_off,
+			(u32_t)expect_off,
+			(u32_t)r->chunk_off0,
+			(u32_t)done,
+			(u32_t)r->chunk_left,
+			(u32_t)r->chunk_nsec0);
+	}
+
+	if (q && q->xfer_buf) {
+		caddr_t bounce_ptr = q->xfer_buf + rel_bytes;
+
+		ATADEBUG(1,"%s req=%ld DPS rel=%lu bounce_ptr=%lx addr_ptr=%lx\n",
+			Cstr(ac),r->reqid,
+			(u32_t)rel_bytes,
+			bounce_ptr,
+			(caddr_t)r->addr+r->xfer_off);
+	}
+#endif
+
+#if 0
+	if ((r->flags & ATA_RF_NEEDCOPY) && q && q->xfer_buf) {
+		r->xptr = q->xfer_buf + rel_bytes;
+	} else if ((r->flags & ATA_RF_BOUNCE_WR) && q->xfer_buf) {
+		r->xptr = q->xfer_buf + rel_bytes;
+#endif
+	if (q && q->xfer_buf && (r->flags & ATA_RF_NEEDCOPY)) {
+		r->xptr = q->xfer_buf + rel_bytes;
+	} else {
+		r->xptr = r->addr + r->xfer_off;
+	}
 
 	/* point xptr at the current transfer offset */
-	r->xptr = r->addr + r->xfer_off;
+	/*r->xptr = r->addr + r->xfer_off;*/
 
 	/* Wait briefly for BSY to clear and DRQ to assert */
 	if (ata_wait(ac, ATA_SR_DRQ|ATA_SR_DRDY, ATA_SR_BSY, 10000, &ast, 0)) {
@@ -809,8 +907,8 @@ ata_prime_write(ata_ctrl_t *ac, ata_req_t *r)
 		}
 	}
 
-	if (!q) printf("que is null\n");
-	if (!r->xptr) printf("r->xptr is null\n");
+	if (!q) ATADEBUG(1,"que is null\n");
+	if (!r->xptr) ATADEBUG(1,"r->xptr is null\n");
 	
 	if (pio_one_sector(ac,r) != 0) {
 		/* Error */
@@ -825,8 +923,8 @@ ata_pushreq(ata_ctrl_t *ac, ata_req_t *r)
     struct buf  *bp  = r ? r->bp : NULL;
     int s;
 
-    ATADEBUG(1, "ata_pushreq(%s: r->id=%ld flags=%08x)\n",
-        Cstr(ac), r ? r->reqid : 0L, ac ? ac->flags : 0);
+    ATADEBUG(1, "ata_pushreq(%s: r->id=%ld flags=%08x: lba=%ld ABSDEV=%d)\n",
+        Cstr(ac), r ? r->reqid : 0L, ac ? ac->flags : 0, r->lba, ISABSDEV(bp->b_edev));
 
     if (!ac || !que || !r || !bp) {
         /* Internal callers should always provide a buf-backed request. */

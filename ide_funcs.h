@@ -58,6 +58,7 @@ ata_req_t *ide_q_get(ata_ctrl_t *);
 void 	ide_q_put(ata_ctrl_t *, ata_req_t *);
 void 	ide_kick(ata_ctrl_t *);
 void 	ide_need_kick(ata_ctrl_t *);
+void 	ide_kick_internal(ata_ctrl_t *);
 
 /*** ide_ata ***/
 int 	ata_sel(ata_ctrl_t *,int, u32_t);
