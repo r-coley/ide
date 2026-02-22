@@ -423,14 +423,38 @@ pio_one_sector(ata_ctrl_t *ac, ata_req_t *r)
 			p16[i] = inw(ATA_DATA_O(ac));
 	}
 	XFERINC(r);
-#if 0
-	r->xptr     += ATA_SECSIZE;
-	r->xfer_off += ATA_SECSIZE;
-	if (r->chunk_left >= 0)   r->chunk_left--;
-	if (r->sectors_left >= 0) r->sectors_left--;
-#endif
 	ATADEBUG(3,"pio_one_sector done: xfer_off=%08x chunk_left=%d sectors_left=%d\n", r->xfer_off,r->chunk_left,r->sectors_left);
 	return 0;
+}
+
+void
+ata_copyback_chunk_if_needed(ata_ctrl_t *ac, ata_req_t *r)
+{
+	ata_ioque_t *q;
+	caddr_t dst;
+
+	if (!ac || !r) return;
+
+	q = ac->ioque;
+	if (!q || !q->xfer_buf) return;
+
+	if (r->is_write) return;
+
+	if (!(r->flags & ATA_RF_NEEDCOPY)) return;
+
+	if (r->chunk_bytes == 0) goto out_clear;
+
+	if (r->xfer_off < r->chunk_bytes) {
+		ATADEBUG(0,"%s: copyback underflow req=%ld off=%lu chunk_bytes=%lu\n",
+			Cstr(ac), r->reqid,
+			(u32_t)r->xfer_off, (u32_t)r->chunk_bytes);
+		goto out_clear;
+	}
+
+	dst = (caddr_t)r->addr + (r->xfer_off - r->chunk_bytes);
+	bcopy(q->xfer_buf, dst, r->chunk_bytes);
+out_clear:
+	r->flags &= ~ATA_RF_NEEDCOPY;
 }
 
 void
@@ -469,16 +493,7 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 		}
 		if (r->chunk_left) return;
 
-		if (!r->is_write && (r->flags & ATA_RF_NEEDCOPY) &&
-		    q->xfer_buf && r->chunk_bytes) {
-			caddr_t dst = (caddr_t)((u8_t *)r->addr + (r->xfer_off - r->chunk_bytes));
-			if (valid_usr_range((addr_t)dst, r->chunk_bytes)) {
-				bcopy((caddr_t)q->xfer_buf,dst,(size_t)(r->chunk_bytes));
-			} else {
-				r->err = EFAULT;
-			}
-			r->flags &= ~ATA_RF_NEEDCOPY;
-		}
+		ata_copyback_chunk_if_needed(ac,r);
 		
 		/* No more sectors? we're done */
 		if (r->sectors_left == 0) {
@@ -679,14 +694,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	r->chunk_off0  = r->xfer_off;
 	r->chunk_nsec0 = r->nsec;
 
-	/*r->flags       &= ~(ATA_RF_NEEDCOPY|ATA_RF_BOUNCE_WR);*/
 	r->flags       &= ~ATA_RF_BOUNCE;
-
-#if 0
-	ATADEBUG(1,"%s req=%ld chunk set off0=%lu nsec0=%lu lba=%lu cmd=%02x\n",
-		Cstr(ac),r->reqid,(u32_t)r->chunk_off0,(uint)r->chunk_nsec0,
-		(u32_t)r->lba_cur,(uint)r->cmd);
-#endif
 
 	if (r->is_write) {
 		/* Write: prefer bounce buffer for IRQ path; copy from 
@@ -787,6 +795,15 @@ ata_finish_current(ata_ctrl_t *ac, int err,int place)
 	    (r->flags & ATA_RF_NEEDCOPY) && 
 	    que->xfer_buf && r->chunk_bytes) { 
 		caddr_t dst = (caddr_t)((char *)r->addr + (r->xfer_off - r->chunk_bytes));
+
+		/*
+		 * FIXME: This should neve get called now and should be
+		 * removable
+		 */
+		ATADEBUG(0,"%s: NEEDCOPY still set at finish req=%ld off=%lu chunk_bytes=%lu\n",
+			Cstr(ac),r->reqid,
+			(u32_t)r->xfer_off,(u32_t)r->chunk_bytes);
+
 		if (valid_usr_range((addr_t)dst, r->chunk_bytes))
 			bcopy(que->xfer_buf, dst, r->chunk_bytes);
 		else
@@ -819,51 +836,12 @@ ata_data_phase_service(ata_ctrl_t *ac, ata_req_t *r)
 	ata_ioque_t *q = ac->ioque;
 	u16_t	done = (u16_t)(r->chunk_nsec0 - r->chunk_left);
 	u32_t	rel_bytes = ((u32_t)done) << 9;
-	u32_t	expect_off = r->chunk_off0 + rel_bytes;
 
-#if 0
-	if (r->chunk_left > r->chunk_nsec0) {
-		ATADEBUG(1,"%s BUG req=%ld chunk_left=%lu > chunk_nsec0(%u)\n",
-			Cstr(ac),r->reqid,
-			(u32_t)r->chunk_left,
-			(u32_t)r->chunk_nsec0);
-	}
-	if (r->xfer_off != expect_off) {
-		ATADEBUG(1,"%s WARN req=%ld xfer_off=%lu expect=%lu off0=%lu done=%u left=%u nsec0=%u\n",
-			Cstr(ac),r->reqid,
-			(u32_t)r->xfer_off,
-			(u32_t)expect_off,
-			(u32_t)r->chunk_off0,
-			(u32_t)done,
-			(u32_t)r->chunk_left,
-			(u32_t)r->chunk_nsec0);
-	}
-
-	if (q && q->xfer_buf) {
-		caddr_t bounce_ptr = q->xfer_buf + rel_bytes;
-
-		ATADEBUG(1,"%s req=%ld DPS rel=%lu bounce_ptr=%lx addr_ptr=%lx\n",
-			Cstr(ac),r->reqid,
-			(u32_t)rel_bytes,
-			bounce_ptr,
-			(caddr_t)r->addr+r->xfer_off);
-	}
-#endif
-
-#if 0
-	if ((r->flags & ATA_RF_NEEDCOPY) && q && q->xfer_buf) {
-		r->xptr = q->xfer_buf + rel_bytes;
-	} else if ((r->flags & ATA_RF_BOUNCE_WR) && q->xfer_buf) {
-		r->xptr = q->xfer_buf + rel_bytes;
-#endif
-	if (q && q->xfer_buf && (r->flags & ATA_RF_NEEDCOPY)) {
+	if (q && q->xfer_buf && (r->flags & ATA_RF_BOUNCE)) {
 		r->xptr = q->xfer_buf + rel_bytes;
 	} else {
 		r->xptr = r->addr + r->xfer_off;
 	}
-
-	/* point xptr at the current transfer offset */
-	/*r->xptr = r->addr + r->xfer_off;*/
 
 	/* Wait briefly for BSY to clear and DRQ to assert */
 	if (ata_wait(ac, ATA_SR_DRQ|ATA_SR_DRDY, ATA_SR_BSY, 10000, &ast, 0)) {

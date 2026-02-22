@@ -136,5 +136,6 @@ void 	ata_region_from_dev(dev_t, u32_t *, u32_t *);
 void 	CopyTbl(ata_part_t *,struct ipart *);
 int 	ata_pdinfo(dev_t);
 void 	ide_poll_engine(ata_ctrl_t *);
+void 	ata_copyback_chunk_if_needed(ata_ctrl_t *, ata_req_t *);
 
 #endif /* _IDE_FUNCS_H */

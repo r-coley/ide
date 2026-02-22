@@ -708,18 +708,7 @@ ide_poll_engine(ata_ctrl_t *ac)
 					break;
 				}
 
-				/*** NEW ***/
-				if (!r->is_write &&
-				   (r->flags & ATA_RF_NEEDCOPY) &&
-				   q->xfer_buf &&
-				   r->chunk_bytes) {
-					caddr_t dst;
-					dst = (caddr_t)r->addr + 
-						(r->xfer_off - r->chunk_bytes);
-					bcopy(q->xfer_buf, dst, r->chunk_bytes);
-					r->flags &= ~ATA_RF_NEEDCOPY;
-				}
-
+				ata_copyback_chunk_if_needed(ac,r);
 
 				if (r->sectors_left > 0) {
 					ata_program_next_chunk(ac, r, HZ/8);
