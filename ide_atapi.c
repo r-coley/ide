@@ -85,14 +85,14 @@ atapi_decode_sense(u8_t *s, int len)
 	printf("\n");
 }
 
-void
+int
 atapi_dosend_packet(ata_ctrl_t *ac, int drive, u16_t byte_count,int where)
 {
 	ATADEBUG(1,"atapi_dosend_packet(%s, drive=%d, bc=%d,LINE=%d)\n",
 		Cstr(ac),drive,byte_count,where);
 
 	/* Select device + 400ns settle */
-	ata_sel(ac,drive,0);
+	if (ata_sel(ac,drive,0) != 0) return EIO;
 
 	/* FEAT=0, SECCNT=0, Byte Count in CYCLOW/HIGH */
 	outb(ATA_FEAT_O(ac),    0x00);
@@ -102,6 +102,7 @@ atapi_dosend_packet(ata_ctrl_t *ac, int drive, u16_t byte_count,int where)
 
 	outb(ATA_CMD_O(ac), ATA_CMD_PACKET);
 	ata_delay400(ac); ata_delay400(ac);
+	return 0;
 }
 
 int
@@ -115,17 +116,15 @@ atapi_read_capacity(ata_ctrl_t *ac, u8_t drive, u32_t *out_blocks, u32_t *out_bl
 
 	/* 10-byte CDB inside 12-byte packet: opcode only, rest zero */
 	cdblen=build_cdb_pkt(CDB_READ_CAPACITY,(u8_t *)u->cdb,(u32_t)0,(u32_t)0);
-
-	if (ata_sel(ac,drive,0) != 0) return EIO;
-
 	/* Program expected byte count */
-	atapi_dosend_packet(ac, drive, (u16_t)xfer_len,__LINE__);
+	if (atapi_dosend_packet(ac, drive, (u16_t)xfer_len,__LINE__) != 0)
+		return EIO;
 
 	if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY,200000L,0,0) != 0) return EIO;
 
 	atapi_send_cdb(ac,u->cdb,cdblen,__LINE__);
 
-	if (ata_wait(ac, ATA_SR_DRQ, ATA_SR_ERR, 500000L, 0, 0) != 0) 	
+	if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY|ATA_SR_ERR,500000L,0,0) != 0) 	
 		return EIO;
 
 	{
@@ -163,12 +162,12 @@ atapi_inquiry(ata_ctrl_t *ac, u8_t drive)
 	u16_t 	avail, words, xfer_len = 36; 
 	u8_t 	buf[64], pdt, rmb, ast, err;
 
+	ATADEBUG(1,"atapi_inquiry(drive=%d)\n",drive);
 	cdblen=build_cdb_pkt(CDB_INQUIRY,(u8_t *)u->cdb,(u32_t)xfer_len,(u32_t)0);
 
-	if (ata_sel(ac,drive,0) != 0) return EIO;
-
 	/* Program expected transfer size into LBA1/LBA2 (ATAPI byte-count) */
-	atapi_dosend_packet(ac, drive, (u16_t)xfer_len,__LINE__);
+	if (atapi_dosend_packet(ac, drive, (u16_t)xfer_len,__LINE__) != 0)
+		return EIO;
 
 	/* Wait for DRQ to send the packet */
 	if (ata_wait(ac, ATA_SR_DRQ, ATA_SR_BSY, 200000L, 0, 0) != 0) 
@@ -177,7 +176,7 @@ atapi_inquiry(ata_ctrl_t *ac, u8_t drive)
 	atapi_send_cdb(ac,u->cdb,cdblen,__LINE__);
 
 	/* Now the device will transfer data; poll for DRQ then read */
-	if (ata_wait(ac, ATA_SR_DRQ, ATA_SR_ERR, 500000L, 0, 0) != 0) 
+	if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY|ATA_SR_ERR,500000L,0,0) != 0) 
 		return EIO;
 
 	/* The device sets the actual byte count to read in LBA1/LBA2 */
@@ -318,8 +317,7 @@ retry_cmd:
 		int wrc;
 
 		/* Wait for BSY to clear */
-		wrc = ata_wait(ac,0,ATA_SR_BSY,1000000L,&st,0);
-		if (wrc != 0) {
+		if (ata_wait(ac,0,ATA_SR_BSY,1000000L,&st,0) != 0) {
 			ATADEBUG(1,"atapi_packet: timeout waiting for BSY clear ST=%02x\n",st);
 			rc = EIO;
 			goto sense_or_fail;
@@ -386,7 +384,7 @@ retry_cmd:
 		}
 	}
 
-	if (ata_wait(ac,0,ATA_SR_BSY,100000L,&st,&err) != 0) {
+	if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,100000L,&st,&err) != 0) {
 		ATADEBUG(1,"atapi_packet: final wait for BSY clear timed out ST=%02x ER=%02x\n",st,err);
 		rc=EIO;
 		goto sense_or_fail;
@@ -452,6 +450,7 @@ atapi_test_unit_ready(ata_ctrl_t *ac, u8_t drive)
 
 	cdblen=build_cdb_pkt(CDB_TEST_UNIT_READY,(u8_t *)u->cdb,(u32_t)0,(u32_t)0);
 	rc = atapi_packet(ac,drive,(u8_t *)u->cdb,cdblen,NULL,0,1,(u8_t *)u->sense,sizeof(u->sense),__LINE__);
+
 	/*
 	 * Decide whether media is present. Some drives (especially removable ATAPI)
 	 * will report UNIT ATTENTION immediately after insertion; that's not 'no media'.
@@ -575,7 +574,7 @@ atapi_start_irq(ata_ctrl_t *ac, ata_req_t *r)
 	ATADEBUG(1,"atapi_start_irq()\n");
 
 	/* Select drive and program the PACKET command with transfer length. */
-	ata_sel(ac, r->drive, 0);
+	if (ata_sel(ac, r->drive, 0) != 0) return EIO;
 	outb(ATA_FEAT_O(ac),    0x00);
 	outb(ATA_SECTCNT_O(ac), 0x00);
 	outb(ATA_SECTNUM_O(ac), 0x00);
@@ -586,7 +585,8 @@ atapi_start_irq(ata_ctrl_t *ac, ata_req_t *r)
 	ata_delay400(ac);
 
 	/* Let interrupts handle the DRQ/CDB/data phases. */
-	ata_wait(ac,0,ATA_SR_BSY,10000,0,0);
+	if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,10000,0,0) != 0)
+		return EIO;
 	return 0;
 }
 
@@ -853,7 +853,8 @@ atapi_send_packet(ata_ctrl_t *ac, u8_t drive, u8_t *cdb, int cdb_len)
 	for(attempt=0; attempt<2; attempt++) {
 		if (attempt == 1) {
 			ata_softreset_ctrl(ac);
-			if (ata_wait(ac,0,ATA_SR_BSY,200000,&ast,0) != 0) {
+			if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,
+							200000,&ast,0) != 0) {
 				printf("ide_send_packet: timedout\n");
 				return ETIMEDOUT;
 			}
@@ -862,7 +863,8 @@ atapi_send_packet(ata_ctrl_t *ac, u8_t drive, u8_t *cdb, int cdb_len)
 		bc = u->atapi_blksz ? u->atapi_blksz : 2048;
 		if (bc==0) bc=2048;
 
-		atapi_dosend_packet(ac,drive,bc,__LINE__);
+		if (atapi_dosend_packet(ac,drive,bc,__LINE__) != 0)
+			continue;
 
 		if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY,200000,&ast,0) != 0) {
 			printf("ata_wait() failed ast=%02x\n",ast);
@@ -960,23 +962,22 @@ atapi_request_sense_now(ata_ctrl_t *ac, int drive, u8_t *sense, int sense_len)
 	if (ac == 0 || sense == 0 || sense_len <= 0)
 		return EINVAL;
 
-	/* Fixed format sense is 18 bytes; request at least that when possible. */
+	/* Fixed format sense is 18 bytes; req at least that when possible. */
 	want = (u16_t)((sense_len >= 18) ? 18 : sense_len);
 
 	cdblen = build_cdb_pkt(CDB_REQUEST_SENSE, (u8_t *)cdb, (u32_t)0, (u32_t)want);
-	if (ata_sel(ac, (u8_t)drive, 0) != 0)
-		return EIO;
 
 	/* Program expected byte count and send PACKET. */
 	bc = want;
-	atapi_dosend_packet(ac, (u8_t)drive, bc, __LINE__);
+	if (atapi_dosend_packet(ac, (u8_t)drive, bc, __LINE__) != 0)
+		return EIO;
 	if (ata_wait(ac, ATA_SR_DRQ, ATA_SR_BSY, 200000L, 0, 0) != 0)
 		return EIO;
 
 	atapi_send_cdb(ac, cdb, cdblen, __LINE__);
 
 	/* Wait for DRQ to read sense data or ERR. */
-	if (ata_wait(ac, ATA_SR_DRQ, ATA_SR_ERR, 500000L, 0, 0) != 0)
+	if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY|ATA_SR_ERR,500000L,0,0) != 0)
 		return EIO;
 
 	/* Read sense payload. */

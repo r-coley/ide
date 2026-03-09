@@ -101,14 +101,20 @@ static	char	buf[50];
 char *
 Cstr(ata_ctrl_t *ac) 
 {
-static	char	buf[20];
-	int	d=ac->sel_drive;
-	int	c=ac->idx;
-	ata_unit_t *u = ac->drive[d];
-	dev_t	dev=ATA_DEV(c,d);
-	char 	*suffix=ISABSDEV(dev) ? " <ABSDEV>" : "";
+static	char	buf[64];
+	char	*suffix;
 
-	sprintf(buf,"c%dd%d%s",c,d,suffix);
+	if (ac == NULL) {
+		sprintf(buf,"c?d?");
+		return buf;
+	}
+	if (ac->sel_drive < 0 || ac->sel_drive > 1) {
+		sprintf(buf,"c%dd?",ac->idx);
+		return buf;
+	}
+
+	suffix=ISABSDEV(ATA_DEV(ac->idx,ac->sel_drive)) ? " <ABSDEV>" : "";
+	sprintf(buf,"c%dd%d%s",ac->idx,ac->sel_drive,suffix);
 	return buf;
 }
 
@@ -175,6 +181,7 @@ ata_attach(int ctrl)
 		RegisterIRQ(ac->irq,&ataintr, SPL5, INTR_TRIGGER_EDGE);
 		AC_SET_FLAG(ac,ACF_INTR_MODE);
 	}
+	ata_softreset_ctrl(ac);
 	for (drive = 0; drive <= 1; drive++) {
 		ata_unit_t *u = ac->drive[drive];
 
@@ -182,7 +189,17 @@ ata_attach(int ctrl)
 		u->pio_multi=1;		/* 1 sector xfers */
 		u->atapi_blocks = 0;
 		u->atapi_blksz  = 0;
-		ata_probe_unit(ac,drive);
+		u->drive=drive;
+		ata_probe_unit(ac,drive,&u->devtype);
+		/*printf("ctrl=%d drive=%d type=%x\n",ctrl,drive,u->devtype);*/
+	}
+
+	for (drive = 0; drive <= 1; drive++) {
+		ata_unit_t *u = ac->drive[drive];
+
+		if (u->devtype == DEV_UNKNOWN) continue;
+		if (u->devtype & DEV_ATAPI) U_SET_FLAG(u,UF_ATAPI);
+		ata_id_unit(ac,u);
 	}
 }
 
@@ -288,55 +305,58 @@ ata_copy_model(u16_t *id, char *dst)
 }
 
 int
-ata_read_signature(ata_ctrl_t *ac, u8_t drive,u16_t *type)
+ata_probe_unit(ata_ctrl_t *ac, u8_t drive,u16_t *type)
 {
-	u8_t st, lc=0, hc=0;
-	u16_t	dev;
+	u8_t 	st, lc=0, hc=0, sc, sn;
+	u16_t	dev=DEV_UNKNOWN;
 
-	ATADEBUG(1,"read_signature(drive=%d)\n",drive);
-
-	ata_softreset_ctrl(ac);
+	ATADEBUG(1,"ata_probe_unit(drive=%d) lbolt=%ld\n",drive,lbolt);
+	if (!AC_HAS_FLAG(ac,ACF_PRESENT)) return EIO;
 
 	if (ata_sel(ac,drive,0) != 0) return EIO;
 
-	/*** Send an CMD_IDENTIFY to force the signature info on the bus ***/
-	outb(ATA_CMD_O(ac), ATA_CMD_IDENTIFY);
-
 	/* Wait for not-BSY */
-	if (ata_wait(ac, 0, ATA_SR_BSY, 500000L, 0, 0) != 0) return EIO;
+	if (ata_wait(ac, 0, ATA_SR_BSY, 500000L, &st, 0) != 0) 
+		return EIO;
 
+	sc = inb(ATA_SECTCNT_O(ac));
+	sn = inb(ATA_SECTNUM_O(ac));
 	lc = inb(ATA_CYLLOW_O(ac));
 	hc = inb(ATA_CYLHIGH_O(ac));
-	ATADEBUG(1,"read_signature() lc=%02x hc=%02x\n",lc,hc);
+	/* printf("read_signature() sc=%02x sn=%02x lc=%02x hc=%02x\n",
+		sc,sn,lc,hc);*/
 
-	switch ((hc<<8)|lc)
-	{
-	case 0x0000: dev = DEV_ATA|DEV_PARALLEL; 	break;
-	case 0x0800: dev = DEV_ATA|DEV_PARALLEL; 	break;
-	case 0xC33C: dev = DEV_ATA|DEV_SERIAL; 		break;
-	case 0xEB14: dev = DEV_ATAPI|DEV_PARALLEL; 	break;
-	case 0x9669: dev = DEV_ATAPI|DEV_SERIAL; 	break;
-	default:     dev = DEV_UNKNOWN;			break;
+	/*** No device check - floating bus ***/
+	if (sc == 0xff && sn == 0xff && lc == 0xff && hc == 0xff) {
+		printf("Floating BUS\n");
+		return ENXIO;
+	}
+
+	if (sc == 0x01 && sn == 0x01) {
+		switch ((hc<<8)|lc)
+		{
+		case 0x0000: dev = DEV_ATA|DEV_PARALLEL; 	break;
+		case 0x0800: dev = DEV_ATA|DEV_PARALLEL; 	break;
+		case 0xC33C: dev = DEV_ATA|DEV_SERIAL; 		break;
+		case 0xEB14: dev = DEV_ATAPI|DEV_PARALLEL; 	break;
+		case 0x9669: dev = DEV_ATAPI|DEV_SERIAL; 	break;
+		default:     dev = DEV_UNKNOWN;			break;
+		}
 	}
 	*type = dev;
 	return (dev == DEV_UNKNOWN) ? -1 : 0;
 }
 
 int
-ata_probe_unit(ata_ctrl_t *ac, u8_t drive)
+ata_id_unit(ata_ctrl_t *ac, ata_unit_t *u)
 {
-	ata_unit_t *u = ac->drive[drive];
 	u8_t 	lc, hc, st;
 	u32_t	type;
 	char 	*klass;
 
-	ATADEBUG(3,"ata_probe_unit(%d)\n",drive);
+	ATADEBUG(3,"ata_id_unit(%d) lbolt=%ld\n",u->drive,lbolt);
 	if (!AC_HAS_FLAG(ac,ACF_PRESENT)) return ENXIO;
-
-	if (ata_read_signature(ac,drive,&u->devtype) != 0) return ENXIO;
-	if (u->devtype & DEV_ATAPI) U_SET_FLAG(u,UF_ATAPI);
-
-	if (ata_identify(ac, drive) != 0) return ENXIO;
+	if (ata_identify(ac, u->drive) != 0) return ENXIO;
  
 	ac->tmo_id    = 0;
 	ac->tmo_ticks = drv_usectohz(2000000); /* 2s is sane for PIO */
@@ -350,9 +370,9 @@ ata_probe_unit(ata_ctrl_t *ac, u8_t drive)
 		 * Populate inquiry fields into ata_unit[] 
 		 * Set CDROM, MOZIP and model etc
 		 */
-		(void)atapi_inquiry(ac, drive);
+		(void)atapi_inquiry(ac, u->drive);
 
-		if ((atapi_read_capacity(ac,drive,&blocks,&blksz) == 0) &&
+		if ((atapi_read_capacity(ac,u->drive,&blocks,&blksz) == 0) &&
 			blocks && blksz) {
 			/*printf("blocks=%ld, blksz=%ld\n",
 				blocks,blksz);*/
@@ -366,7 +386,7 @@ ata_probe_unit(ata_ctrl_t *ac, u8_t drive)
 		u->lbsize = (blksz ? blksz : 2048);
 		if (u->lbsize < 512) u->lbsize=512;
 
-		atapi_test_unit_ready(ac,drive);
+		atapi_test_unit_ready(ac,u->drive);
 
 		if (U_HAS_FLAG(u,UF_CDROM) || U_HAS_FLAG(u,UF_MOZIP)) {
 			med = (U_HAS_FLAG(u,UF_HASMEDIA)) ? "Inserted"
@@ -394,7 +414,7 @@ ata_probe_unit(ata_ctrl_t *ac, u8_t drive)
 	u->lbshift=(u8_t)((u->lbsize >> 9) 
 			? (u->lbsize==512 ?0:(u->lbsize==1024 ? 1 : 2)) : 0);
 
-	ata_negotiate_pio_multiple(ac,drive);
+	ata_negotiate_pio_multiple(ac,u->drive);
 
 	return 0;
 }

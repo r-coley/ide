@@ -87,7 +87,7 @@ int	multicmd(ata_ctrl_t *,int,u32_t,u32_t);
 
 /*** ide_atapi ***/
 void 	atapi_program_packet(ata_ctrl_t *, ata_req_t *, u16_t);
-void 	atapi_dosend_packet(ata_ctrl_t *, int, u16_t,int);
+int 	atapi_dosend_packet(ata_ctrl_t *, int, u16_t,int);
 int 	atapi_read_capacity(ata_ctrl_t *ac, u8_t, u32_t *, u32_t *);
 int 	atapi_inquiry(ata_ctrl_t *, u8_t);
 int 	atapi_read10(ata_ctrl_t *, u8_t, u32_t, u16_t,void *);
@@ -130,8 +130,8 @@ void 	reset_queue(ata_ctrl_t *,int);
 void 	ata_attach(int);
 int 	ata_read_vtoc(dev_t, int);
 void 	ata_copy_model(u16_t *, char *);
-int 	ata_read_signature(ata_ctrl_t *, u8_t, u16_t *);
-int 	ata_probe_unit(ata_ctrl_t *,u8_t);
+int 	ata_probe_unit(ata_ctrl_t *, u8_t, u16_t *);
+int 	ata_id_unit(ata_ctrl_t *,ata_unit_t *);
 void 	ata_region_from_dev(dev_t, u32_t *, u32_t *);
 void 	CopyTbl(ata_part_t *,struct ipart *);
 int 	ata_pdinfo(dev_t);

@@ -3,10 +3,13 @@
 int
 ata_sel(ata_ctrl_t *ac, int drive, u32_t lba)
 {
-	ata_unit_t *u=ac->drive[drive];
+	ata_unit_t *u;
 	u8_t ast, erc; 
 
+	if (drive<0 || drive>1) return EINVAL;
+	u=ac->drive[drive];
 	if (!u) return EIO;
+
 	if (u->lba_ok) {
 		u8_t	hi4 = (u8_t)((lba>>24) & 0x0f);
 
@@ -123,7 +126,7 @@ ata_identify(ata_ctrl_t *ac, int drive)
 
 	ATA_IRQ_OFF(ac,1);
 
-	bzero((caddr_t)r,sizeof(r));
+	bzero((caddr_t)r,sizeof(*r));
 	r->drive	= drive;
 	r->cmd		= (u->devtype & DEV_ATAPI) ? ATA_CMD_IDENTIFY_PKT 
 						   : ATA_CMD_IDENTIFY;
@@ -159,7 +162,7 @@ ata_flush_cache(ata_ctrl_t *ac,u8_t drive)
 
 	ATADEBUG(1,"ata_flush_cache(%s)\n",Cstr(ac));
 
-	bzero((caddr_t)r,sizeof(r));
+	bzero((caddr_t)r,sizeof(*r));
 	r->drive	= drive;
 	r->is_write	= 0;
 	r->cmd		= ATA_CMD_FLUSH_CACHE;
@@ -179,7 +182,8 @@ ata_quiesce_ctrl(ata_ctrl_t *ac)
 	u16_t	words, bc, chunk, scratch[256];
 
 	ATADEBUG(9,"ide_quiesce_ctrl(%s)\n",Cstr(ac));
-	ata_wait(ac, 0, ATA_SR_BSY, 500000, 0, 0);
+	if (ata_wait(ac, 0, ATA_SR_BSY, 500000, 0, 0) != 0)
+		; /* Perhaps reset ctrl and retry */
 
 	for(pass=0; pass<2; pass++) {
 		ast = inb(ATA_ALTSTATUS_O(ac));
@@ -247,48 +251,21 @@ void
 ata_softreset_ctrl(ata_ctrl_t *ac)
 {
 	int	i, was_enabled = AC_HAS_FLAG(ac,ACF_IRQ_ON);
-	int	saved_drive;
-	int	saved_mode;
-	u8_t	saved_hi4;
-	u16_t	drvhd;
 
 	ATADEBUG(1,"ata_softreset_ctrl(%d)\n",ac->idx);
 
-	/*
-	 * Soft-reset clears the device/head register selection in hardware.
-	 * Preserve our cached selection so we can restore it afterwards, keeping
-	 * the cache and hardware consistent.
-	 */
-	saved_drive = ac->sel_drive;
-	saved_mode  = ac->sel_mode;
-	saved_hi4   = ac->sel_hi4;
 	BUMP(ac,softresets);
 	AC_CLR_FLAG(ac,ACF_IRQ_ON); /* Clear the flag */
 	outb(ATA_DEVCTRL_O(ac), ATA_CTL_SRST | ATA_CTL_NIEN);
 	for(i=0;i<16;i++) ata_delay400(ac);
 	outb(ATA_DEVCTRL_O(ac), ATA_CTL_NIEN); /* deassert SRST */
 	(void)inb(ATA_ALTSTATUS_O(ac));
+	ata_delay400(ac);
 
-	/*
-	 * Restore prior device/head selection (if any). We do this after SRST is
-	 * deasserted so subsequent commands that assume a particular selection
-	 * don't accidentally run against drive 0.
-	 */
-	if (saved_drive >= 0) {
-		drvhd = ATA_DH((u8_t)saved_drive,
-			(saved_mode == SEL_LBA28) ? 1 : 0,
-			saved_hi4);
-		outb(ATA_DRVHD_O(ac), drvhd);
-		ata_delay400(ac);
-		ac->sel_drive = saved_drive;
-		ac->sel_mode  = saved_mode;
-		ac->sel_hi4   = saved_hi4;
-	} else {
-		/* No valid cached selection */
-		ac->sel_drive = -1;
-		ac->sel_mode  = 0;
-		ac->sel_hi4   = 0;
-	}
+	/* No valid cached selection */
+	ac->sel_drive = -1;
+	ac->sel_mode  = 0;
+	ac->sel_hi4   = 0xff;
 
 	if (was_enabled) ATA_IRQ_ON(ac);
 }
@@ -300,13 +277,14 @@ ata_enable_pio_multiple(ata_ctrl_t *ac, u8_t drive, u8_t multi)
 
 	if (!multi || multi <= 1) return 0;
 
-	ata_sel(ac,drive,0);
+	if (ata_sel(ac,drive,0) != 0) return EIO;
 
 	outb(ATA_SECTCNT_O(ac),multi);
 	outb(ATA_CMD_O(ac),ATA_CMD_SET_MULTI);
 	ata_delay400(ac);
 
-	if (ata_wait(ac, 0, ATA_SR_BSY, 1000000, &ast, &err) != 0) return -1;
+	if (ata_wait(ac, 0, ATA_SR_BSY|ATA_SR_DRQ, 1000000, &ast, &err) != 0) 
+		return -1;
 	if (ast & (ATA_SR_ERR|ATA_SR_DWF))  return -1;
 
 	return 0;
@@ -462,7 +440,7 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 {
 	ata_ioque_t *q = ac ? ac->ioque : 0;
 	int	i;
-	u8_t ast, err;
+	u8_t ast, err, st2 = 0, er2 = 0;
 
 	if (!r) {
 		BUMP(ac, irq_no_cur);
@@ -521,14 +499,12 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 		 * When chunk_left reaches 0, the current command should be complete; drain
 		 * final status, then either start the next chunk or finish the request.
 		 */
-		if (r->chunk_left > 0) {
-			return;
-		}
-		{
-			u8_t st2 = 0, er2 = 0;
-			/* ensure command completion before issuing a new one */
-			(void)ata_wait(ac, 0, ATA_SR_BSY|ATA_SR_DRQ, 200000, &st2, &er2);
-		}
+		if (r->chunk_left > 0) return;
+
+		/* ensure command completion before issuing a new one */
+		if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,200000,&st2,&er2) != 0)
+			; /* Perhaps ctrl reset?? */
+		
 		/* Start next chunk (new command) for remaining sectors */
 		ata_program_next_chunk(ac, r, HZ/8);
 		return;
@@ -561,8 +537,18 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 	u8_t 	ast, err, dh;
 	int	er;
 
-	ata_wait(ac,0,ATA_SR_BSY,500000,0,0);
-	ata_sel(ac, drive, lba);
+	if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,500000,0,0) != 0) {
+		r->err = EIO;
+		return;
+	}
+	if (ata_sel(ac, drive, lba) != 0) {
+		r->err = EIO;
+		return;
+	}
+	if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,500000,0,0) != 0) {
+		r->err = EIO;
+		return;
+	}
 	er=ata_err(ac,&ast,&err);
 	r->flags &= ~ATA_RF_CDB_SENT;
 
