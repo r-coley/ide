@@ -1,3 +1,6 @@
+/*
+ * ide_atapi.c
+ */
 #include "ide.h"
 
 /* Debug helper: synchronous REQUEST SENSE for async error paths. */
@@ -111,8 +114,9 @@ atapi_read_capacity(ata_ctrl_t *ac, u8_t drive, u32_t *out_blocks, u32_t *out_bl
 	ata_unit_t *u = ac->drive[drive];
 	u16_t 	xfer_len = 8;   /* READ CAPACITY(10) returns 8 bytes */
 	u8_t 	buf[16], ast, err;
-	int 	i, er, cdblen;
+	int 	i, cdblen;
 	u32_t	last_lba, blksz, blocks;
+	u16_t 	tmp[4];
 
 	/* 10-byte CDB inside 12-byte packet: opcode only, rest zero */
 	cdblen=build_cdb_pkt(CDB_READ_CAPACITY,(u8_t *)u->cdb,(u32_t)0,(u32_t)0);
@@ -127,14 +131,12 @@ atapi_read_capacity(ata_ctrl_t *ac, u8_t drive, u32_t *out_blocks, u32_t *out_bl
 	if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY|ATA_SR_ERR,500000L,0,0) != 0) 	
 		return EIO;
 
-	{
-		u16_t tmp[4];
-		insw(ATA_DATA_O(ac),tmp,4);
-		for(i=0;i<4;i++) {
-			buf[(i<<1)+0] = CDB16_L(tmp[i]);
-			buf[(i<<1)+1] = CDB16_H(tmp[i]);
-		}
+	insw(ATA_DATA_O(ac),tmp,4);
+	for(i=0;i<4;i++) {
+		buf[(i<<1)+0] = CDB16_L(tmp[i]);
+		buf[(i<<1)+1] = CDB16_H(tmp[i]);
 	}
+
  	(void)ata_wait(ac, 0, ATA_SR_BSY | ATA_SR_DRQ, 500000L, &ast, 0);
 
 	/* Parse: [last LBA][block length]; both big-endian */
@@ -158,7 +160,7 @@ int
 atapi_inquiry(ata_ctrl_t *ac, u8_t drive)
 {
 	ata_unit_t *u=ac->drive[drive];
-	int 	i, er, cdblen;
+	int 	i, cdblen;
 	u16_t 	avail, words, xfer_len = 36; 
 	u8_t 	buf[64], pdt, rmb, ast, err;
 
@@ -267,11 +269,10 @@ int
 atapi_packet(ata_ctrl_t *ac, u8_t drive, u8_t *cdb, int cdb_len, void *buf, u32_t xfer_len, int dir, u8_t *sense, int sense_len,int where)
 {
 	ata_unit_t *u = ac->drive[drive];
-	u32_t final_to = (dir == 0) ? 5000000L : 100000L;	
 	u8_t  ast, st, err, ir, errreg;
 	u16_t bc, wcount, w;
 	u32_t to_xfer;
-	int   rc, spins;
+	int   rc;
 	int   retries = 0;
 
 	ATADEBUG(1,"atapi_packet(%s,where=%d)\n",Cstr(ac),where);
@@ -314,8 +315,6 @@ retry_cmd:
 
 /* Step 2: data/status loop (polled) */
 	for (; !U_HAS_FLAG(u,UF_ABORT);) {
-		int wrc;
-
 		/* Wait for BSY to clear */
 		if (ata_wait(ac,0,ATA_SR_BSY,1000000L,&st,0) != 0) {
 			ATADEBUG(1,"atapi_packet: timeout waiting for BSY clear ST=%02x\n",st);
@@ -396,7 +395,7 @@ retry_cmd:
 	}
 	if ((st & ATA_SR_DWF) && U_HAS_FLAG(u,UF_ATAPI)) {
 		ATADEBUG(1,"atapi_packet: final status error ST=%02x ERR=%02x\n",st,err);
-		rc=0;
+		rc=EIO;
 		goto sense_or_fail;
 	}
 	return 0;
@@ -518,13 +517,12 @@ int
 atapi_read_toc(ata_ctrl_t *ac, u8_t drive, int msf, u8_t format, u8_t track_session, void *buf, u16_t len)
 {
 	ata_unit_t *u = ac->drive[drive];
-	u8_t 	cdb[12];
 	int	cdblen;
 	u32_t 	x1;
 
 	if (len > 4096) len=4096;
 
-	x1 = (msf << 24) || (format << 16) || (track_session << 8);
+	x1 = (msf << 24) | (format << 16) | (track_session << 8);
 	cdblen=build_cdb_pkt(CDB_READ_TOC,(u8_t *)u->cdb, (u32_t)x1,(u32_t)len);
 
 	return atapi_packet(ac, drive, u->cdb, cdblen, buf, (u32_t)len, 1,
@@ -541,8 +539,8 @@ atapi_play_audio_msf(ata_ctrl_t *ac, u8_t drive,
 	u32_t 	x1;
 	u16_t 	x2;
 
-	x1 = (start_m << 24) || (start_s << 16) || (start_f << 8) || end_m;
-	x2 = (end_s << 8) || end_f;
+	x1 = (start_m << 24) | (start_s << 16) | (start_f << 8) | end_m;
+	x2 = (end_s << 8) | end_f;
 
 	cdblen=build_cdb_pkt(CDB_PLAY_AUDIO_MSF, (u8_t *)u->cdb,(u32_t)x1,(u32_t)x2);
 	return atapi_packet(ac, drive, u->cdb, cdblen, NULL, 0, -1,
@@ -611,6 +609,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8]);
 		return 12;
 
+	case CDB_MODE_SENSE_6:
 	case CDB_MODE_SENSE_10:
 	    {
 		u8_t	page    = CDB16_H((u16_t)x1);
@@ -621,8 +620,12 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 		cdb[2] = (u8_t)((page & 0x3f) |
 		                ((subpage != 0) ? 0x40 : 0x00));
 		cdb[3] = subpage;
-		cdb[7] = CDB16_H((u16_t)x2);
-		cdb[8] = CDB16_L((u16_t)x2);
+		if ( opcode == CDB_MODE_SENSE_6) {
+			cdb[4] = (u8_t)x2;
+		} else {
+			cdb[7] = CDB16_H((u16_t)x2);
+			cdb[8] = CDB16_L((u16_t)x2);
+		}
 		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8]);
 		return 12;
@@ -682,6 +685,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 		u8_t end_s   = CDB16_H(x2);
 		u8_t end_f   = CDB16_L(x2);
 
+		bzero((caddr_t)cdb, 12);
 		cdb[0] = opcode;
 		cdb[3] = start_m;
 		cdb[4] = start_s;
@@ -691,6 +695,27 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 		cdb[8] = end_f;
 		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8],cdb[9],cdb[10],cdb[11]);
+		return 12;
+	    }
+	case CDB_PAUSE_RESUME: {
+		u8_t	resume=x1;
+
+		bzero((caddr_t)cdb, 12);
+		cdb[0] = CDB_PAUSE_RESUME;
+		cdb[8] = resume ? 1 : 0;
+		return 12;
+	    }
+	case CDB_READ_SUBCHANNEL: {
+		u8_t	msf=x1;
+		u8_t	alloc=x2;
+
+		bzero((caddr_t)cdb,sizeof(cdb));
+		cdb[0] = CDB_READ_SUBCHANNEL;
+		cdb[1] = msf ? 0x02 : 0x00;
+		cdb[2] = 0x40;
+		cdb[3] = 0x01;
+		cdb[7] = (alloc >> 8) & 0xff;
+		cdb[8] = alloc & 0xff;
 		return 12;
 	    }
 	}
@@ -756,6 +781,7 @@ atapi_request(ata_ctrl_t *ac, ata_req_t *r, int arm_ticks)
 		r->cdb_len = build_cdb_pkt(r->is_write ? CDB_WRITE_10 
 						       : CDB_READ_10,
                                    r->cdb, (u32_t)r->lba_cur, (u32_t)nblks);
+		if (r->cdb_len < 0) return EINVAL;
 
 		if (nblks == 0) return 0;
 
@@ -811,6 +837,10 @@ atapi_request(ata_ctrl_t *ac, ata_req_t *r, int arm_ticks)
 		r->cdb_len = build_cdb_pkt(r->is_write ? CDB_WRITE_10 
 						       : CDB_READ_10,
                                    r->cdb, (u32_t)r->lba_cur, (u32_t)nblks);
+		if (r->cdb_len < 0) {
+			rc=EINVAL;
+			break;
+		}
 
 		rc = atapi_packet(ac, r->drive, r->cdb, r->cdb_len,
                           (void *)r->addr, xfer, dir,
@@ -842,9 +872,9 @@ int
 atapi_send_packet(ata_ctrl_t *ac, u8_t drive, u8_t *cdb, int cdb_len)
 {
 	ata_unit_t *u = ac->drive[drive];
-	u8_t 	ast, err, ir, cod, io;
+	u8_t 	ast, ir, cod, io;
 	u16_t 	words_cdb[6], bc;
-	int 	i, attempt;
+	int 	attempt;
 
 	ATADEBUG(1,"atapi_send_packet(%s, CDB[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 		Cstr(ac),cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8],cdb[9],cdb[10],cdb[11]);
@@ -1269,12 +1299,10 @@ atapi_pause_resume(ata_ctrl_t *ac, u8_t drive, int resume)
 {
 	ata_unit_t *u = ac->drive[drive];
 	u8_t	cdb[12];
+	int	cdblen;
 
-	bzero((caddr_t)cdb, sizeof(cdb));
-	cdb[0] = CDB_PAUSE_RESUME;
-	cdb[8] = resume ? 1 : 0;
-
-	return atapi_packet(ac,drive,cdb,sizeof(cdb), NULL, 0, -1,
+	cdblen=build_cdb_pkt(CDB_PAUSE_RESUME,(u8_t *)u->cdb, (u32_t)resume,(u32_t)0);
+	return atapi_packet(ac,drive,u->cdb,cdblen, NULL, 0, -1,
 			    (u8_t *)u->sense,sizeof(u->sense),__LINE__);
 }
 
@@ -1282,7 +1310,7 @@ int
 atapi_start_stop(ata_ctrl_t *ac, u8_t drive, int start, int loej)
 {
 	ata_unit_t *u = ac->drive[drive];
-	u8_t	cdb[6];
+	u8_t	cdb[12];
 
 	bzero((caddr_t)cdb, sizeof(cdb));
 	cdb[0] = CDB_START_STOP_UNIT;
@@ -1300,16 +1328,10 @@ atapi_read_subchnl(ata_ctrl_t *ac, u8_t drive, int msf, cd_subchnl_io_t *sc)
 	u8_t	buf[24];
 	u16_t	alloc = sizeof(buf);
 	int	rc;
+	int	cdblen;
 
-	bzero((caddr_t)cdb,sizeof(cdb));
-	cdb[0] = CDB_READ_SUBCHANNEL;
-	cdb[1] = (msf ? 0x40 : 0x00) | 0x02;
-	cdb[2] = 0;
-	cdb[3] = 0;
-	cdb[7] = (alloc >> 8) & 0xff;
-	cdb[8] = alloc & 0xff;
-
-	rc = atapi_packet(ac, drive, cdb, sizeof(cdb),
+	cdblen=build_cdb_pkt(CDB_READ_SUBCHANNEL,(u8_t *)u->cdb, msf,alloc);
+	rc = atapi_packet(ac, drive, u->cdb, cdblen,
 			  buf, alloc, 1,
 			  (u8_t *)u->sense, sizeof(u->sense),__LINE__);
 	if (rc != 0) 
@@ -1323,7 +1345,7 @@ atapi_read_subchnl(ata_ctrl_t *ac, u8_t drive, int msf, cd_subchnl_io_t *sc)
 	sc->abs_s	 = buf[10];
 	sc->abs_f	 = buf[11];
 
-	sc->rel_m	 = buf[11];
+	sc->rel_m	 = buf[13];
 	sc->rel_s	 = buf[14];
 	sc->rel_f	 = buf[15];
 	return 0;

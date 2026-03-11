@@ -1,6 +1,10 @@
+/*
+ * ide_misc.c
+ */
 #include "ide.h"
 #include <stdarg.h>
 #include <sys/cmn_err.h>
+
 extern int ata_major;
 
 extern void ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st);
@@ -171,7 +175,7 @@ void
 ata_attach(int ctrl)
 {
 	ata_ctrl_t *ac= &ata_ctrl[ctrl];
-	int 	i, drive, rc=-1;
+	int 	drive;
 
 	ATADEBUG(1,"ata_attach(%d)\n",ctrl);
 
@@ -199,7 +203,10 @@ ata_attach(int ctrl)
 
 		if (u->devtype == DEV_UNKNOWN) continue;
 		if (u->devtype & DEV_ATAPI) U_SET_FLAG(u,UF_ATAPI);
-		ata_id_unit(ac,u);
+		if (ata_id_unit(ac,u) != 0) {
+			U_CLR_FLAG(u,UF_PRESENT);
+			u->devtype = DEV_UNKNOWN;
+		}
 	}
 }
 
@@ -272,7 +279,6 @@ ata_read_vtoc(dev_t dev,int part)
 		    fp->slice[s].p_flag & V_VALID) {
 				int 	devu = ATA_DEV_UNIT(dev);
 				int 	swapu = ATA_DEV_UNIT(swapdev);
-				dev_t	nswapdev;
 
 				if (devu == swapu && nswap == 0) 
 					nswap = fp->slice[s].p_size;
@@ -310,13 +316,16 @@ ata_probe_unit(ata_ctrl_t *ac, u8_t drive,u16_t *type)
 	u8_t 	st, lc=0, hc=0, sc, sn;
 	u16_t	dev=DEV_UNKNOWN;
 
+	*type = dev;
 	ATADEBUG(1,"ata_probe_unit(drive=%d) lbolt=%ld\n",drive,lbolt);
-	if (!AC_HAS_FLAG(ac,ACF_PRESENT)) return EIO;
+	if (!AC_HAS_FLAG(ac,ACF_PRESENT))
+		return EIO;
 
-	if (ata_sel(ac,drive,0) != 0) return EIO;
+	if (ata_sel(ac,drive,0) != 0)
+		return EIO;
 
 	/* Wait for not-BSY */
-	if (ata_wait(ac, 0, ATA_SR_BSY, 500000L, &st, 0) != 0) 
+	if (ata_wait(ac, 0, ATA_SR_BSY, 500000L, &st, 0) != 0)
 		return EIO;
 
 	sc = inb(ATA_SECTCNT_O(ac));
@@ -350,8 +359,6 @@ ata_probe_unit(ata_ctrl_t *ac, u8_t drive,u16_t *type)
 int
 ata_id_unit(ata_ctrl_t *ac, ata_unit_t *u)
 {
-	u8_t 	lc, hc, st;
-	u32_t	type;
 	char 	*klass;
 
 	ATADEBUG(3,"ata_id_unit(%d) lbolt=%ld\n",u->drive,lbolt);
@@ -386,7 +393,8 @@ ata_id_unit(ata_ctrl_t *ac, ata_unit_t *u)
 		u->lbsize = (blksz ? blksz : 2048);
 		if (u->lbsize < 512) u->lbsize=512;
 
-		atapi_test_unit_ready(ac,u->drive);
+		if (atapi_test_unit_ready(ac,u->drive) != 0)
+			ATADEBUG(1,"atapi_test_unit_ready failed\n");
 
 		if (U_HAS_FLAG(u,UF_CDROM) || U_HAS_FLAG(u,UF_MOZIP)) {
 			med = (U_HAS_FLAG(u,UF_HASMEDIA)) ? "Inserted"
@@ -402,7 +410,6 @@ ata_id_unit(ata_ctrl_t *ac, ata_unit_t *u)
 		char 	*lba28 = u->lba_ok ? "LBA28" : "";
 		unsigned long nsec = u->nsectors;
 
-		ulong_t mib = nsec >> 11; 
 		ulong_t gib_i = nsec / 2097152UL;
 		ulong_t gib_tenths = ((nsec % 2097152UL) * 10UL) / 2097152UL;
 
@@ -449,8 +456,9 @@ ata_region_from_dev(dev_t dev, u32_t *out_base, u32_t *out_len)
 			if (fp->systid == UNIXOS) {
 				if (slice != 0 && 
 				    slice != ATA_WHOLE_PART_SLICE) {
+					/*** -1 is on purpose ***/
 					base += fp->slice[slice].p_start-1;
-					len    = fp->slice[slice].p_size;
+					len   = fp->slice[slice].p_size;
 				}
 			}
 		}
@@ -635,8 +643,10 @@ bok(struct buf *bp, int resid)
 
 		bflush(bp->b_edev);
 		/* FLUSH CACHE (0xE7) is ATA-Only; ATAPI will ABRT it */
-		if (!U_HAS_FLAG(u,UF_ATAPI)) 
-			ata_flush_cache(ac,drive); 
+		if (!U_HAS_FLAG(u,UF_ATAPI)) {
+			if (ata_flush_cache(ac,drive) != 0) 
+				cmn_err(CE_WARN,"ide: flush cache failed ctrl=%d drive=%d\n",ATA_CTRL(bp->b_edev),drive);
+		}
 	}
 	biodone(bp);
 	return 0;
@@ -731,7 +741,10 @@ ide_poll_engine(ata_ctrl_t *ac)
 				ata_copyback_chunk_if_needed(ac,r);
 
 				if (r->sectors_left > 0) {
-					ata_program_next_chunk(ac, r, HZ/8);
+					if (ata_program_next_chunk(ac, r, HZ/8) != 0) {
+						ata_finish_current(ac, EIO, __LINE__);
+						ide_kick(ac);
+					}
 				} else {
 					ata_finish_current(ac, 0, __LINE__);
 					ide_kick(ac);

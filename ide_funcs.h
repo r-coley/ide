@@ -57,7 +57,6 @@ void 	ide_start(ata_ctrl_t *);
 ata_req_t *ide_q_get(ata_ctrl_t *);
 void 	ide_q_put(ata_ctrl_t *, ata_req_t *);
 void 	ide_kick(ata_ctrl_t *);
-void 	ide_need_kick(ata_ctrl_t *);
 void 	ide_kick_internal(ata_ctrl_t *);
 
 /*** ide_ata ***/
@@ -86,7 +85,9 @@ int	ata_pushreq(ata_ctrl_t *,ata_req_t *);
 int	multicmd(ata_ctrl_t *,int,u32_t,u32_t);
 
 /*** ide_atapi ***/
+#if 0
 void 	atapi_program_packet(ata_ctrl_t *, ata_req_t *, u16_t);
+#endif
 int 	atapi_dosend_packet(ata_ctrl_t *, int, u16_t,int);
 int 	atapi_read_capacity(ata_ctrl_t *ac, u8_t, u32_t *, u32_t *);
 int 	atapi_inquiry(ata_ctrl_t *, u8_t);
@@ -101,7 +102,6 @@ void 	atapi_send_cdb(ata_ctrl_t *, u8_t *, int, int);
 int	atapi_start_irq(ata_ctrl_t *, ata_req_t *);
 void	atapi_service_irq(ata_ctrl_t *, ata_req_t *, u8_t);
 int 	build_cdb_pkt(u8_t, u8_t *, u32_t, u32_t);
-int 	atapi_prog_packet(ata_ctrl_t *, ata_req_t *, int); /*WHY*/
 int 	atapi_send_packet(ata_ctrl_t *, u8_t, u8_t *, int);
 int 	atapi_read_toc(ata_ctrl_t *, u8_t, int, u8_t, u8_t, void *, u16_t);
 int 	atapi_play_audio_msf(ata_ctrl_t *, u8_t,

@@ -1,3 +1,6 @@
+/*
+ * ide_ata.c
+ */
 #include "ide.h"
 
 int
@@ -118,7 +121,6 @@ ata_identify(ata_ctrl_t *ac, int drive)
 	ata_unit_t *u=ac->drive[drive];
 	ata_req_t rb, *r=&rb;
 	u16_t 	id[256];
-	int 	i;
 
 	ATADEBUG(1,"ata_identify(%s): io=%x\n",Cstr(ac),ac->io_base);
 
@@ -178,8 +180,8 @@ void
 ata_quiesce_ctrl(ata_ctrl_t *ac)
 {
 	int	pass;
-	u8_t 	ast, st;
-	u16_t	words, bc, chunk, scratch[256];
+	u8_t 	ast;
+	u16_t	words, bc, scratch[256];
 
 	ATADEBUG(9,"ide_quiesce_ctrl(%s)\n",Cstr(ac));
 	if (ata_wait(ac, 0, ATA_SR_BSY, 500000, 0, 0) != 0)
@@ -210,7 +212,7 @@ ata_quiesce_ctrl(ata_ctrl_t *ac)
 void	
 ata_dump_stats(void)
 {
-	int	ctrl, driv;
+	int	ctrl;
 
 	for(ctrl=0; ctrl<ATA_MAX_CTRL; ctrl++) {
 		ata_ctrl_t *ac= &ata_ctrl[ctrl];
@@ -340,7 +342,7 @@ ata_err(ata_ctrl_t *ac, u8_t *ast, u8_t *err)
 void
 ata_rescue(int ctrl)
 {
-	ata_ctrl_t *ac= &ata_ctrl[1];
+	ata_ctrl_t *ac;
 	ata_unit_t *u;
 
 	if (ctrl < 0 || ctrl > 3) {
@@ -438,8 +440,6 @@ out_clear:
 void
 ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 {
-	ata_ioque_t *q = ac ? ac->ioque : 0;
-	int	i;
 	u8_t ast, err, st2 = 0, er2 = 0;
 
 	if (!r) {
@@ -506,7 +506,10 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 			; /* Perhaps ctrl reset?? */
 		
 		/* Start next chunk (new command) for remaining sectors */
-		ata_program_next_chunk(ac, r, HZ/8);
+		if (ata_program_next_chunk(ac, r, HZ/8) != 0) {
+			ata_finish_current(ac,EIO,__LINE__);
+			ide_kick(ac);
+		}
 		return;
 	}	
 
@@ -535,7 +538,6 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 	u16_t todo   = (r->nsec == 0) ? 256 : ((r->nsec>256) ? 256 : r->nsec);
 	u8_t  sc     = (todo == 256) ? 0 : todo;
 	u8_t 	ast, err, dh;
-	int	er;
 
 	if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,500000,0,0) != 0) {
 		r->err = EIO;
@@ -549,7 +551,7 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 		r->err = EIO;
 		return;
 	}
-	er=ata_err(ac,&ast,&err);
+	(void)ata_err(ac,&ast,&err);
 	r->flags &= ~ATA_RF_CDB_SENT;
 
 	/* Cache last command */
@@ -645,9 +647,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	size_t 	bytes;
 	ata_ioque_t *q = ac->ioque;
 	ata_unit_t  *u = ac->drive[r->drive];
-	u8_t	ast;
-	int	s, er, multi_ok;
-	caddr_t	user_ptr;
+	int	s;
 
 	ATADEBUG(2,"ata_request(Reqid=%ld)\n",r ? r->reqid : 0);
 	if (!r) return 0;
@@ -861,8 +861,6 @@ ata_prime_write(ata_ctrl_t *ac, ata_req_t *r)
 {
 	ata_ioque_t *q = ac->ioque;
 	u8_t	ast, err;
-	u8_t	drive = r->drive & 1;
-	int	er;
 
 	if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY,1000000,&ast,&err) != 0) {
 		if (!(ast & ATA_SR_DRQ)) {

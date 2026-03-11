@@ -62,7 +62,7 @@ ide_watchdog(caddr_t arg)
 	ata_ctrl_t *ac = (ata_ctrl_t *)arg;
 	ata_ioque_t *q = ac ? ac->ioque : NULL;
 	ata_req_t   *r = q ? q->cur : NULL;
-	int	s, er, progress=0;
+	int	s, progress=0;
 	u8_t 	ast, err;
 
 	/* we are running the timeout callback referenced by tmo_id */
@@ -81,7 +81,7 @@ ide_watchdog(caddr_t arg)
 
 	BUMP(ac,wd_fired);
 
-	er = ata_err(ac,&ast,&err); 	/*** Check for Error ***/
+	(void)ata_err(ac,&ast,&err); 	/*** Check for Error ***/
 
 	if (r->prev_chunk_left != r->chunk_left ||
 	    r->prev_sectors_left != r->sectors_left) {
@@ -130,7 +130,12 @@ if (r->wdog_stuck > 5 &&
 	}
 	if (r->chunk_left == 0 && r->sectors_left > 0) {
 		BUMP(ac,wd_rekicked);
-		ata_program_next_chunk(ac, r, HZ/8);
+		if (ata_program_next_chunk(ac, r, HZ/8) != 0) {
+			splx(s);
+			ata_finish_current(ac,EIO,__LINE__);
+			ide_kick(ac);
+			return;
+		}
 		splx(s);
 		if (!AC_HAS_FLAG(ac, ACF_INTR_MODE))
 			ide_schedule_kick(ac);
@@ -246,7 +251,7 @@ ide_start(ata_ctrl_t *ac)
 {
 	ata_ioque_t *q = ac->ioque;
 	ata_req_t   *r = q ? q->q_head : NULL;
-	u8_t	drive, ast;
+	u8_t	ast;
         int	s;
 
 	ast=inb(ATA_ALTSTATUS_O(ac));
@@ -286,7 +291,12 @@ ide_start(ata_ctrl_t *ac)
 			r->xfer_off,
 			r->chunk_bytes);
 
-	ata_program_next_chunk(ac,r,HZ/8);
+	if (ata_program_next_chunk(ac,r,HZ/8) != 0) {
+		splx(s);
+		ata_finish_current(ac,EIO,__LINE__);
+		ide_kick(ac);
+		return;
+	}
 	splx(s);
 	return;
 }

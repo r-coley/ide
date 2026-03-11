@@ -1,3 +1,6 @@
+/*
+ * ide_core.c
+ */
 #include "ide.h"
 
 ata_unit_t ata_unit[ATA_MAX_UNITS]; /* up to 2 drives per controller */
@@ -199,13 +202,11 @@ atabreakup(struct buf *bp)
 int
 atastrategy(struct buf *bp)
 {
-	int	dev=bp->b_edev, is_wr, s, do_kick;
+	int	dev=bp->b_edev;
 	ata_ctrl_t *ac = &ata_ctrl[ATA_CTRL(dev)];
 	ata_unit_t *u = ac->drive[ATA_DRIVE(dev)];
-	ata_ioque_t *q = ac->ioque;
 	ata_req_t *r;
-	u32_t	base, len, lba, left;
-	char	*addr;
+	u32_t	base, len;
 
 	/*
 	 * SVR4 buffer semantics:
@@ -270,8 +271,7 @@ atastrategy(struct buf *bp)
 		r->cmd 		= multicmd(ac,r->is_write,bp->b_blkno,r->nsec);
 	}
 
-	ata_pushreq(ac,r);
-	return 0;
+	return ata_pushreq(ac,r);
 }
 
 int
@@ -321,7 +321,6 @@ static int ataioctl_rdwrabs(dev_t dev, ata_unit_t *u, caddr_t arg, int rw)
 {
 	struct absio ab;
 	struct buf *bp;
-	dev_t 	adev;
 	u32_t 	blksz;
 	int	rc;
 
@@ -390,7 +389,6 @@ static int ataioctl_gettype(ata_unit_t *u, caddr_t arg)
 	struct v_gettype gt;
 
 	gt.flags = u->flags & UF_USER_MASK;
-	gt.model[0] = '0';
 	strncpy(gt.model, u->model, sizeof(gt.model) - 1);
 	gt.model[sizeof(gt.model) - 1] = 0;
 	strncpy(gt.product, u->product, sizeof(gt.product) - 1);
@@ -736,14 +734,11 @@ atafindctrl(int irq)
 int
 ataintr(int irq)
 {
-	int 	ctrl;
 	ata_ctrl_t *ac;
 	ata_ioque_t *q;
 	ata_req_t *r;
 	ata_unit_t *u;
-	int	drive, er;
 	u8_t 	st, ast, err, drvs;
-	u32_t	lba;
 
 	ATADEBUG(1,"ataintr(%d)\n",irq);
 
