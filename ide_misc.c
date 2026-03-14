@@ -27,22 +27,25 @@ ATADEBUG(int lvl, char *fmt, ...)
 {
 	va_list ap;
 	char 	buf[256];
-	int 	i, s;
+	int 	len, s;
 
 	if (atadebug < lvl || fmt == NULL)
 		return;
 
 	va_start(ap, fmt);
-	(void)vsnprintf(buf, sizeof(buf), fmt, ap);
+	len=vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
 
-	/* Ensure newline termination for /dev/osm consumption */
-	for (i = 0; i < (int)sizeof(buf) && buf[i] != '\0'; i++)
-		;
-	if (i == 0 || buf[i - 1] != '\n') {
-		if (i < (int)sizeof(buf) - 1) {
-			buf[i++] = '\n';
-			buf[i] = '\0';
+	if (len < 0) 
+		len=0;
+	else
+	if (len >= (int)sizeof(buf))
+		len=(int)sizeof(buf)-1;
+
+	if (len == 0 || buf[len - 1] != '\n') {
+		if (len < (int)sizeof(buf) - 1) {
+			buf[len++] = '\n';
+			buf[len] = '\0';
 		} else {
 			buf[sizeof(buf) - 2] = '\n';
 			buf[sizeof(buf) - 1] = '\0';
@@ -61,8 +64,8 @@ ATADEBUG(int lvl, char *fmt, ...)
 	 * One wakeup per message.
 	 */
 	s = splhi();
-	for (i = 0; buf[i] != '\0'; i++)
-		putbuf[putbufndx++ % putbufsz] = buf[i];
+	for (len = 0; buf[len] != '\0'; len++)
+		putbuf[putbufndx++ % putbufsz] = buf[len];
 	splx(s);
 
 	wakeup((caddr_t)putbuf);
@@ -194,7 +197,7 @@ ata_attach(int ctrl)
 		u->atapi_blocks = 0;
 		u->atapi_blksz  = 0;
 		u->drive=drive;
-		ata_probe_unit(ac,drive,&u->devtype);
+		(void)ata_probe_unit(ac,drive,&u->devtype);
 		/*printf("ctrl=%d drive=%d type=%x\n",ctrl,drive,u->devtype);*/
 	}
 
@@ -213,8 +216,7 @@ ata_attach(int ctrl)
 int 
 ata_read_vtoc(dev_t dev,int part)
 {
-	int 	slice = ATA_SLICE(dev),
-		ctrl  = ATA_CTRL(dev),
+	int 	ctrl  = ATA_CTRL(dev),
 		drive = ATA_DRIVE(dev);
 	ata_ctrl_t *ac = &ata_ctrl[ctrl];
 	ata_unit_t *u=ac->drive[drive];
@@ -456,7 +458,13 @@ ata_region_from_dev(dev_t dev, u32_t *out_base, u32_t *out_len)
 			if (fp->systid == UNIXOS) {
 				if (slice != 0 && 
 				    slice != ATA_WHOLE_PART_SLICE) {
-					/*** -1 is on purpose ***/
+					/*
+					 * I dont recall why I have -1 here
+					 * however, all my FS's are now built
+					 * and I have all my data on them so
+					 * changing this now will screw me
+					 * I can live with this as is for now
+					 */
 					base += fp->slice[slice].p_start-1;
 					len   = fp->slice[slice].p_size;
 				}
@@ -475,16 +483,14 @@ int
 ata_pdinfo(dev_t dev)
 {
 	int 	part  = ATA_PART(dev),
-		slice = ATA_SLICE(dev),
 		ctrl  = ATA_CTRL(dev),
 		drive = ATA_DRIVE(dev);
 	ata_ctrl_t *ac;
 	ata_unit_t *u;
 	struct mboot *mboot;
 	struct ipart *ip;
-	struct buf *bp;
 	ata_part_t *fp;
-	int	i, s, rc;
+	int	i;
 
 	if (ctrl < 0 || ctrl>ATA_MAX_CTRL) return ENODEV;
 	ac = &ata_ctrl[ctrl];

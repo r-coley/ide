@@ -75,14 +75,14 @@ void 	ata_rescue(int);
 void 	ata_rescueit(ata_ctrl_t *);
 int 	pio_one_sector(ata_ctrl_t *, ata_req_t *);
 void 	ata_service_irq(ata_ctrl_t *, ata_req_t *, u8_t);
-void 	ata_program_taskfile(ata_ctrl_t *, ata_req_t *);
+int 	ata_program_taskfile(ata_ctrl_t *, ata_req_t *);
 int 	ata_program_next_chunk(ata_ctrl_t *,ata_req_t *,int);
 int 	ata_prog_pio(ata_ctrl_t *,ata_req_t *,int);
 void 	ata_finish_current(ata_ctrl_t *, int,int);
 int 	ata_data_phase_service(ata_ctrl_t *,ata_req_t *);
 void 	ata_prime_write(ata_ctrl_t *, ata_req_t *);
 int	ata_pushreq(ata_ctrl_t *,ata_req_t *);
-int	multicmd(ata_ctrl_t *,int,u32_t,u32_t);
+int	multicmd(ata_ctrl_t *,int,u32_t);
 
 /*** ide_atapi ***/
 #if 0

@@ -62,7 +62,7 @@ ide_watchdog(caddr_t arg)
 	ata_ctrl_t *ac = (ata_ctrl_t *)arg;
 	ata_ioque_t *q = ac ? ac->ioque : NULL;
 	ata_req_t   *r = q ? q->cur : NULL;
-	int	s, progress=0;
+	int	s;
 	u8_t 	ast, err;
 
 	/* we are running the timeout callback referenced by tmo_id */
@@ -88,29 +88,26 @@ ide_watchdog(caddr_t arg)
 		r->wdog_stuck=0;
 		r->prev_chunk_left = r->chunk_left;
 		r->prev_sectors_left = r->sectors_left;
-		progress=1;
 	} else {
 		r->wdog_stuck++;
 	}
 
-
-/*
- * If the device is not busy and not reporting ERR, but is still
- * asserting DRQ with no forward progress, we can wedge forever
- * waiting for a completion interrupt that will never come.
- * Proactively recover from this "DRQ stuck" state.
- */
-if (r->wdog_stuck > 5 &&
-    !(ast & ATA_SR_BSY) &&
-    (ast & ATA_SR_DRQ) &&
-    !(ast & (ATA_SR_ERR|ATA_SR_DWF)) &&
-    err == 0) {
-	printf("ide_watchdog: DRQ stuck (lba=%ld) ST=%02x ERR=%02x\n",
-		r->lba_cur, ast, err);
-	ata_softreset_ctrl(ac);
-	ata_rescueit(ac);
-	return;
-}
+	/*
+ 	 * If the device is not busy and not reporting ERR, but is still
+ 	 * asserting DRQ with no forward progress, we can wedge forever
+ 	 * waiting for a completion interrupt that will never come.
+ 	 * Proactively recover from this "DRQ stuck" state.
+ 	 */
+	if (r->wdog_stuck > 5 &&
+    	    !(ast & ATA_SR_BSY) &&
+    	    (ast & ATA_SR_DRQ) &&
+    	    !(ast & (ATA_SR_ERR|ATA_SR_DWF)) && err == 0) {
+		printf("ide_watchdog: DRQ stuck (lba=%ld) ST=%02x ERR=%02x\n",
+			r->lba_cur, ast, err);
+		ata_softreset_ctrl(ac);
+		ata_rescueit(ac);
+		return;
+	}
 
 	if (r->wdog_stuck > 50) {
 		printf("ide_watchdog: timeout waiting for completion (lba=%ld) ST=%02x ERR=%02x\n", r->lba_cur,ast,err);

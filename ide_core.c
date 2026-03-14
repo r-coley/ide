@@ -123,7 +123,6 @@ ataopen(dev_t *devp, int flags, int otyp, cred_t *crp)
 		rc=atapi_read_capacity(ac,drive,&blocks,&blksz);
 		if (rc != 0) {
 			if (blksz == 0) blksz = 2048;
-			if (blocks == 0) blocks = 0;
 		}
 		u->atapi_blksz=(blksz ? blksz : 2048);
 		u->atapi_blocks=blocks;
@@ -145,7 +144,7 @@ ataopen(dev_t *devp, int flags, int otyp, cred_t *crp)
 
 	if (slice < 0 || slice > ATA_NPART-1) return ENXIO;
 
-	if (!fp->vtoc_valid || fp->slice[slice].p_size == 0) return ENXIO;
+	if (fp->slice[slice].p_size == 0) return ENXIO;
 ok:
 	q->open_count++;
 	return 0;
@@ -268,7 +267,7 @@ atastrategy(struct buf *bp)
 		r->lba_cur      = r->lba;
 		r->nsec         = (u32_t)(bp->b_bcount >> 9);
 		r->sectors_left = r->nsec;
-		r->cmd 		= multicmd(ac,r->is_write,bp->b_blkno,r->nsec);
+		r->cmd 		= multicmd(ac,r->is_write,r->nsec);
 	}
 
 	return ata_pushreq(ac,r);
@@ -605,32 +604,13 @@ ataioctl(dev_t dev, int cmd, caddr_t arg, int mode, cred_t *crp, int *rvalp)
 
 	/* --- Private ATAPI CD-ROM TOC / audio controls --- */
 	case CDIOC_READTOC:
-		return ataioctl_cdrom(ac, u, drive, cmd, arg, mode);
-
-
 	case CDIOC_PLAYMSF:
-		return ataioctl_cdrom(ac, u, drive, cmd, arg, mode);
-
-
 	case CDIOC_PAUSE:
-		return ataioctl_cdrom(ac, u, drive, cmd, arg, mode);
-
-
 	case CDIOC_RESUME:
-		return ataioctl_cdrom(ac, u, drive, cmd, arg, mode);
-
-
 	case CDIOC_EJECT:
-		return ataioctl_cdrom(ac, u, drive, cmd, arg, mode);
-
-
 	case CDIOC_LOAD:
-		return ataioctl_cdrom(ac, u, drive, cmd, arg, mode);
-
-
 	case CDIOC_SUBCHANNEL:
 		return ataioctl_cdrom(ac, u, drive, cmd, arg, mode);
-
 
 	default:
 		printf("Unknown IOCTL 0x%x\n",cmd);

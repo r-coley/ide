@@ -18,14 +18,14 @@ ld -r -o Driver.o ide_core.o ide_queue.o ide_ata.o ide_atapi.o ide_misc.o
 echo "Installing Driver and space.c"
 mkdir -p /etc/conf/pack.d/ata 2>/dev/null
 cp Driver.o /etc/conf/pack.d/ata/
-cp ID/Space.c /etc/conf/pack.d/ata/space.c
+#cp ID/Space.c /etc/conf/pack.d/ata/space.c
 cp ide.h ide_funcs.h ide_hw.h /usr/include/sys/
 
 if [ $install -eq 1 ]
 then
 	echo "Install System and Master files as well"
-	cp ID/ide.Sdev /etc/conf/sdevice.d/ide
-	cp ID/ide.Mdev /etc/conf/mdevice.d/ide
+	cp ID/ata.Sdev /etc/conf/sdevice.d/ata
+	cp ID/ata.Mdev /etc/conf/mdevice.d/ata
 	cp /etc/conf/cf.d/mdevice /etc/conf/cf.d/mdevice.RC
 	ed /etc/conf/cf.d/mdevice << EOF
 /^ide[	 ]/d

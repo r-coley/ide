@@ -113,7 +113,7 @@ atapi_read_capacity(ata_ctrl_t *ac, u8_t drive, u32_t *out_blocks, u32_t *out_bl
 {
 	ata_unit_t *u = ac->drive[drive];
 	u16_t 	xfer_len = 8;   /* READ CAPACITY(10) returns 8 bytes */
-	u8_t 	buf[16], ast, err;
+	u8_t 	buf[16], ast;
 	int 	i, cdblen;
 	u32_t	last_lba, blksz, blocks;
 	u16_t 	tmp[4];
@@ -186,7 +186,7 @@ atapi_inquiry(ata_ctrl_t *ac, u8_t drive)
 		 (u16_t)inb(ATA_CYLLOW_O(ac));
 	if (avail == 0 || avail > xfer_len) avail = xfer_len;
 
-	words = (int)(avail + 1) >> 1;
+	words = (int)(((u32_t)avail + 1) >> 1);
 	for (i = 0; i < (int)words; i++) {
 		u16_t w = inw(ATA_DATA_O(ac));
 		if ((i<<1) < sizeof(buf)) {
@@ -654,7 +654,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 	case CDB_REQUEST_SENSE:
 		bzero((caddr_t)cdb, 12);
 		cdb[0] = opcode;
-		cdb[4] = (u16_t)x2;                /* alloc length */
+		cdb[4] = (u8_t)x2;                /* alloc length */
 		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8]);
 		return 12;
@@ -709,7 +709,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 		u8_t	msf=x1;
 		u8_t	alloc=x2;
 
-		bzero((caddr_t)cdb,sizeof(cdb));
+		bzero((caddr_t)cdb,12);
 		cdb[0] = CDB_READ_SUBCHANNEL;
 		cdb[1] = msf ? 0x02 : 0x00;
 		cdb[2] = 0x40;

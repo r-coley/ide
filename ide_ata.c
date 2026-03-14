@@ -136,7 +136,10 @@ ata_identify(ata_ctrl_t *ac, int drive)
 	r->sectors_left	= 0;
 	r->chunk_left	= 0;
 	r->is_write	= 0;
-	ata_program_taskfile(ac,r);
+	if (ata_program_taskfile(ac,r) != 0) {
+		U_CLR_FLAG(u,UF_PRESENT);
+		return ENODEV;
+	}
 
 	if (ata_wait(ac, ATA_SR_DRQ, ATA_SR_BSY, 500000, 0, 0) != 0) {
 		/* no ATA device mark not present */
@@ -168,7 +171,8 @@ ata_flush_cache(ata_ctrl_t *ac,u8_t drive)
 	r->drive	= drive;
 	r->is_write	= 0;
 	r->cmd		= ATA_CMD_FLUSH_CACHE;
-	ata_program_taskfile(ac,r);
+	if (ata_program_taskfile(ac,r) != 0)
+		return EIO;
 	
 	if (ata_wait(ac, ATA_SR_DRDY, 
 			 ATA_SR_BSY|ATA_SR_DRQ, 2000000, 0, 0) != 0)
@@ -181,7 +185,8 @@ ata_quiesce_ctrl(ata_ctrl_t *ac)
 {
 	int	pass;
 	u8_t 	ast;
-	u16_t	words, bc, scratch[256];
+	u32_t	words, bc; 		/* Was u16_t*/
+	u16_t	scratch[256];
 
 	ATADEBUG(9,"ide_quiesce_ctrl(%s)\n",Cstr(ac));
 	if (ata_wait(ac, 0, ATA_SR_BSY, 500000, 0, 0) != 0)
@@ -440,7 +445,7 @@ out_clear:
 void
 ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 {
-	u8_t ast, err, st2 = 0, er2 = 0;
+	u8_t ast, err;
 
 	if (!r) {
 		BUMP(ac, irq_no_cur);
@@ -502,7 +507,7 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 		if (r->chunk_left > 0) return;
 
 		/* ensure command completion before issuing a new one */
-		if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,200000,&st2,&er2) != 0)
+		if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,200000,0,0) != 0)
 			; /* Perhaps ctrl reset?? */
 		
 		/* Start next chunk (new command) for remaining sectors */
@@ -529,7 +534,7 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 	ide_arm_watchdog(ac,HZ/8);
 }
 
-void
+int
 ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 {
 	u32_t lba    = r->lba_cur;
@@ -541,15 +546,15 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 
 	if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,500000,0,0) != 0) {
 		r->err = EIO;
-		return;
+		return EIO;
 	}
 	if (ata_sel(ac, drive, lba) != 0) {
 		r->err = EIO;
-		return;
+		return EIO;
 	}
 	if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,500000,0,0) != 0) {
 		r->err = EIO;
-		return;
+		return EIO;
 	}
 	(void)ata_err(ac,&ast,&err);
 	r->flags &= ~ATA_RF_CDB_SENT;
@@ -564,8 +569,12 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 	ac->lc.tick  = lbolt;
 
 	switch (cmd) {
-	case ATA_CMD_READ_SEC:
 	case ATA_CMD_READ_SEC_EXT:
+	case ATA_CMD_WRITE_SEC_EXT:
+		r->err = EIO;
+		return EIO;
+
+	case ATA_CMD_READ_SEC:
 	case ATA_CMD_READ_MULTI:
 		outb(ATA_SECTCNT_O(ac), sc);
 		outb(ATA_LBA0_O(ac),    (u8_t)(lba      ));
@@ -575,7 +584,6 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 		break;
 
 	case ATA_CMD_WRITE_SEC:
-	case ATA_CMD_WRITE_SEC_EXT:
 	case ATA_CMD_WRITE_MULTI:
 		outb(ATA_SECTCNT_O(ac), sc);
 		outb(ATA_LBA0_O(ac),    (u8_t)(lba      ));
@@ -619,7 +627,6 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 	if (AC_HAS_FLAG(ac,ACF_INTR_MODE)) {
 		drv_usecwait(20);
 		if (cmd == ATA_CMD_WRITE_SEC ||
-		    cmd == ATA_CMD_WRITE_SEC_EXT ||
 		    cmd == ATA_CMD_WRITE_MULTI) {
 			if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY,200000,0,0) == 0)
 				ata_prime_write(ac,r);
@@ -628,6 +635,7 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 					Cstr(ac),inb(ATA_ALTSTATUS_O(ac)));
 		}
 	}
+	return 0;
 }
 
 int 
@@ -674,7 +682,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	r->nsec 	= (u16_t)n;
 	r->chunk_left   = (u16_t)n;
 	r->chunk_bytes  = (u32_t)bytes;
-	r->cmd          = multicmd(ac, r->is_write,r->lba_cur,n);
+	r->cmd          = multicmd(ac, r->is_write, n);
 
 	/** CHUNK TRACKING **/
 	r->chunk_off0  = r->xfer_off;
@@ -713,7 +721,10 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	q->cur  = r;
 	splx(s);
 
-	ata_program_taskfile(ac, r);
+	if (ata_program_taskfile(ac, r) != 0) {
+		ata_finish_current(ac,EIO,__LINE__);
+		return EIO;
+	}
 
 	/* reset DRQ wait budget for this chunk */
 	r->await_drq_ticks = HZ * 2;
@@ -874,6 +885,9 @@ ata_prime_write(ata_ctrl_t *ac, ata_req_t *r)
 	
 	if (pio_one_sector(ac,r) != 0) {
 		/* Error */
+#if 1
+		ata_finish_current(ac,EIO,__LINE__);
+#endif
 	}
 	return;
 }
@@ -911,19 +925,14 @@ ata_pushreq(ata_ctrl_t *ac, ata_req_t *r)
 }
 
 int
-multicmd(ata_ctrl_t *ac, int is_write, u32_t lba, u32_t nsec)
+multicmd(ata_ctrl_t *ac, int is_write, u32_t nsec)
 {
-	int	use_ext = 0; /* (lba > 0xffffffff) && ac->lba48_ok;*/
 	int	multi_ok = (nsec>1) && (ac->pio_multi>1) && ac->multi_set_ok;
 
 	if (is_write) {
-		if (use_ext) return multi_ok ? ATA_CMD_WRITE_MULTI_EXT
-					     : ATA_CMD_WRITE_SEC_EXT;
 		return multi_ok ? ATA_CMD_WRITE_MULTI
 				: ATA_CMD_WRITE_SEC;
 	} else {
-		if (use_ext) return multi_ok ? ATA_CMD_READ_MULTI_EXT
-					     : ATA_CMD_READ_SEC_EXT;
 		return multi_ok ? ATA_CMD_READ_MULTI
 				: ATA_CMD_READ_SEC;
 	}
