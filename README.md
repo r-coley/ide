@@ -9,7 +9,7 @@ int  atapi_intr_mode=0;   /* 1 = Interrupt,  0 = Polling */
 ```
 
 A standard UnixWare machine wont have the RegisterIRQ() ideally use the pci driver i've uploaded 
-This version will work as a minimum
+This version will work as a minimum but actually isnt completely correct - it will work for testing
 
 ```
 enum intr_trigger {
@@ -36,11 +36,7 @@ RegisterIRQ(int irq,int (*func)(),int pri,enum intr_trigger le)
                  intpri[irq]=pri;
                  if ((int)(irq+1) > nintr)
                          nintr=irq+1;
-                  if (splvalid_flag) {
-                           asm("cli");
-                           pic_add_handler(); /* Lift from PIC driver */
-                           asm("sti");
-                  }
+                  picinit();
          }
          else
          if (ivect[irq] == func)
@@ -63,7 +59,6 @@ RegisterIRQ(int irq,int (*func)(),int pri,enum intr_trigger le)
          if (old_intr_mask != level_intr_mask)
                  elcr_write_trigger(irq, le);
  
-         /*elcr_show();*/
-         return -1;
+         return 0;
 }
 ```
