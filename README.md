@@ -25,7 +25,7 @@ enum intr_trigger {
  * RegisterIRQ(11, &ataintr, SPL6, INTR_TRIGGER_LEVEL);
  */
 int
-RegisterIRQ(int irq,int (*func)(),int pri,enum intr_trigger le)
+RegisterIRQ(char *name,int irq,int (*func)(),int pri,enum intr_trigger le)
 {
          extern int      intnull(), (*ivect[])(), nintr;
          extern uchar_t  intpri[];
