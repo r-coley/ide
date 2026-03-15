@@ -496,4 +496,6 @@ typedef struct cd_subchnl_io {
 	u8_t	abs_m, abs_s, abs_f;
 } cd_subchnl_io_t;
 
+#define IDEDBG	atadebug,ata_debug_console
+
 #endif /* _IDE_H */

@@ -30,6 +30,7 @@
 
 extern 	ata_ctrl_t ata_ctrl[];
 extern	int 	atadebug;
+extern	int 	ata_debug_console;
 extern	int 	ata_intr_mode;
 extern	int 	atapi_intr_mode;
 extern 	ata_unit_t ata_unit[];
@@ -118,7 +119,6 @@ void 	atapi_decode_sense(u8_t *, int);
 
 /*** ide_misc ***/
 char 	*getstr(char *, int, int, int, int);
-void	ATADEBUG(int,char *,...);
 int 	ata_getblock(dev_t, daddr_t, caddr_t, u32_t);
 int 	ata_putblock(dev_t, daddr_t, caddr_t, u32_t);
 int 	berror(struct buf *, int, int);

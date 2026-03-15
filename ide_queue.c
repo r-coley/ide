@@ -10,7 +10,7 @@ static void ide_schedule_kick(ata_ctrl_t *ac);
 void 
 ide_arm_watchdog(ata_ctrl_t *ac, int ticks)
 {
-	ATADEBUG(5,"%s: ide_arm_watchdog(%d)\n", Cstr(ac), ticks);
+	DrvDebug(IDEDBG,5,"%s: ide_arm_watchdog(%d)\n", Cstr(ac), ticks);
 
 	if (ticks <= 0)
 		ticks = (ac->tmo_ticks ? ac->tmo_ticks : 2*HZ);
@@ -25,7 +25,7 @@ ide_arm_watchdog(ata_ctrl_t *ac, int ticks)
 void 
 ide_cancel_watchdog(ata_ctrl_t *ac)
 {
-	ATADEBUG(5,"%s: ide_cancel_watchdog()\n", Cstr(ac));
+	DrvDebug(IDEDBG,5,"%s: ide_cancel_watchdog()\n", Cstr(ac));
 
 	if (ac->tmo_id) {
 		BUMP(ac,wd_cancel);
@@ -68,7 +68,7 @@ ide_watchdog(caddr_t arg)
 	/* we are running the timeout callback referenced by tmo_id */
 	ac->tmo_id = 0;
 
-	ATADEBUG(3,"ide_watchdog(r=%08x chunk_left=%x sectors_left=%x)\n",
+	DrvDebug(IDEDBG,3,"ide_watchdog(r=%08x chunk_left=%x sectors_left=%x)\n",
 		r, r ? r->chunk_left : -1, r ? r->sectors_left : -1);
 
 	if (q && q->cur == NULL) 
@@ -156,7 +156,7 @@ ide_q_put(ata_ctrl_t *ac, ata_req_t *r)
 	ata_ioque_t *q=ac->ioque;
 	int	start_engine=0, s;
 
-	ATADEBUG(5,"ide_q_put()\n");
+	DrvDebug(IDEDBG,5,"ide_q_put()\n");
 
 	s = splbio();
         r->next = (ata_req_t *)0;
@@ -189,7 +189,7 @@ ide_q_get(ata_ctrl_t *ac)
 		ac->nreq--;
 	}
 	splx(s);
-	ATADEBUG(5,"ide_q_get() returns %lx\n",r);
+	DrvDebug(IDEDBG,5,"ide_q_get() returns %lx\n",r);
 	return r;
 }
 
@@ -200,7 +200,7 @@ ide_kick_internal(ata_ctrl_t *ac)
 	int 	s, do_start=0;
 	u8_t	st;
 
-	ATADEBUG(5,"ide_kick_internal()\n");
+	DrvDebug(IDEDBG,5,"ide_kick_internal()\n");
 
 	s = splbio();
 	if (AC_HAS_FLAG(ac, ACF_INTR_MODE)) {
@@ -230,7 +230,7 @@ ide_kick(ata_ctrl_t *ac)
 {
 	int	s;
 
-	ATADEBUG(5,"ide_kick()\n");
+	DrvDebug(IDEDBG,5,"ide_kick()\n");
 
 	s=splbio();
 	if (AC_HAS_FLAG(ac, ACF_IN_ISR) || AC_HAS_FLAG(ac,ACF_POLL_RUNNING)) {
@@ -253,7 +253,7 @@ ide_start(ata_ctrl_t *ac)
 
 	ast=inb(ATA_ALTSTATUS_O(ac));
 /*RC*/
-	ATADEBUG(5,"ide_start(%s: reqid=%08x #req=%d cur=%p ST=%02x flags=%08x)\n",
+	DrvDebug(IDEDBG,5,"ide_start(%s: reqid=%08x #req=%d cur=%p ST=%02x flags=%08x)\n",
 		Cstr(ac), r ? r->reqid : 0, ac->nreq, q->cur, ast, ac->flags);
 
         s = splbio();
@@ -277,7 +277,7 @@ ide_start(ata_ctrl_t *ac)
 	r->chunk_left	= 0;
 	r->xfer_off	= 0;
 	
-	ATADEBUG(5,"Req=%ld lba=%lu nsec=%lu addr=%lx - lba_cur=%lu secleft=%lu chunkleft=%lu xoff=%lu chunk_bytes=%lu\n",
+	DrvDebug(IDEDBG,5,"Req=%ld lba=%lu nsec=%lu addr=%lx - lba_cur=%lu secleft=%lu chunkleft=%lu xoff=%lu chunk_bytes=%lu\n",
 			r->reqid,
 			r->lba,
 			r->nsec,

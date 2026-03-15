@@ -9,67 +9,7 @@ extern int ata_major;
 
 extern void ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st);
 
-#define BS	0x08
-
-extern char 	putbuf[];
-extern int	putbufsz;
-extern int	putbufndx;
-extern int	ata_debug_console;
-extern short	prt_where;
-
-extern int  dbg_getchar();
-extern void dbg_putchar(int);
-
 u32_t	req_seq=0;
-
-void
-ATADEBUG(int lvl, char *fmt, ...) 
-{
-	va_list ap;
-	char 	buf[256];
-	int 	len, s;
-
-	if (atadebug < lvl || fmt == NULL)
-		return;
-
-	va_start(ap, fmt);
-	len=vsnprintf(buf, sizeof(buf), fmt, ap);
-	va_end(ap);
-
-	if (len < 0) 
-		len=0;
-	else
-	if (len >= (int)sizeof(buf))
-		len=(int)sizeof(buf)-1;
-
-	if (len == 0 || buf[len - 1] != '\n') {
-		if (len < (int)sizeof(buf) - 1) {
-			buf[len++] = '\n';
-			buf[len] = '\0';
-		} else {
-			buf[sizeof(buf) - 2] = '\n';
-			buf[sizeof(buf) - 1] = '\0';
-		}
-	}
-
-	/* Optional console mirroring */
-	if (ata_debug_console) {
-		printf("%s", buf);
-		return;
-	}
-
-	/*
-	 * Write to putbuf directly so debug is available via /dev/osm
-	 * without relying on prt_where routing (avoids interleaving issues).
-	 * One wakeup per message.
-	 */
-	s = splhi();
-	for (len = 0; buf[len] != '\0'; len++)
-		putbuf[putbufndx++ % putbufsz] = buf[len];
-	splx(s);
-
-	wakeup((caddr_t)putbuf);
-}
 
 void
 CopyTbl(ata_part_t *fp,struct ipart *ipart)
@@ -162,7 +102,7 @@ reset_queue(ata_ctrl_t *ac,int hard)
 {
 	ata_ioque_t *q=ac->ioque;
 
-	ATADEBUG(2,"reset_queue()\n");
+	DrvDebug(IDEDBG,2,"reset_queue()\n");
 	if (ac->tmo_id) {
     		untimeout(ac->tmo_id);
     		ac->tmo_id = 0;
@@ -180,12 +120,12 @@ ata_attach(int ctrl)
 	ata_ctrl_t *ac= &ata_ctrl[ctrl];
 	int 	drive;
 
-	ATADEBUG(1,"ata_attach(%d)\n",ctrl);
+	DrvDebug(IDEDBG,1,"ata_attach(%d)\n",ctrl);
 
 	if (!AC_HAS_FLAG(ac,ACF_PRESENT)) return;
 
 	if (ata_intr_mode || atapi_intr_mode) {
-		RegisterIRQ(ac->irq,&ataintr, SPL5, INTR_TRIGGER_EDGE);
+		RegisterIRQ("ata",ac->irq,&ataintr,SPL5,INTR_TRIGGER_EDGE);
 		AC_SET_FLAG(ac,ACF_INTR_MODE);
 	}
 	ata_softreset_ctrl(ac);
@@ -229,7 +169,7 @@ ata_read_vtoc(dev_t dev,int part)
 	int	isataroot = (getmajor(rootdev) == ata_major) ? 1 : 0;
 	int	isataswap = (getmajor(swapdev) == ata_major) ? 1 : 0;
 
-	ATADEBUG(1,"ata_read_vtoc(%s dev=%x) isataroot=%d isataswap=%d\n",
+	DrvDebug(IDEDBG,1,"ata_read_vtoc(%s dev=%x) isataroot=%d isataswap=%d\n",
 		Dstr(dev),BASEDEV(dev),isataroot,isataswap);
 
 	if (U_HAS_FLAG(u,UF_ATAPI)) return 0;
@@ -319,7 +259,7 @@ ata_probe_unit(ata_ctrl_t *ac, u8_t drive,u16_t *type)
 	u16_t	dev=DEV_UNKNOWN;
 
 	*type = dev;
-	ATADEBUG(1,"ata_probe_unit(drive=%d) lbolt=%ld\n",drive,lbolt);
+	DrvDebug(IDEDBG,1,"ata_probe_unit(drive=%d) lbolt=%ld\n",drive,lbolt);
 	if (!AC_HAS_FLAG(ac,ACF_PRESENT))
 		return EIO;
 
@@ -363,7 +303,7 @@ ata_id_unit(ata_ctrl_t *ac, ata_unit_t *u)
 {
 	char 	*klass;
 
-	ATADEBUG(3,"ata_id_unit(%d) lbolt=%ld\n",u->drive,lbolt);
+	DrvDebug(IDEDBG,3,"ata_id_unit(%d) lbolt=%ld\n",u->drive,lbolt);
 	if (!AC_HAS_FLAG(ac,ACF_PRESENT)) return ENXIO;
 	if (ata_identify(ac, u->drive) != 0) return ENXIO;
  
@@ -396,7 +336,7 @@ ata_id_unit(ata_ctrl_t *ac, ata_unit_t *u)
 		if (u->lbsize < 512) u->lbsize=512;
 
 		if (atapi_test_unit_ready(ac,u->drive) != 0)
-			ATADEBUG(1,"atapi_test_unit_ready failed\n");
+			DrvDebug(IDEDBG,1,"atapi_test_unit_ready failed\n");
 
 		if (U_HAS_FLAG(u,UF_CDROM) || U_HAS_FLAG(u,UF_MOZIP)) {
 			med = (U_HAS_FLAG(u,UF_HASMEDIA)) ? "Inserted"
@@ -438,7 +378,7 @@ ata_region_from_dev(dev_t dev, u32_t *out_base, u32_t *out_len)
 	u32_t	base=0, len=0, bsz512;
 	ata_part_t *fp = &u->fd[part];
 
-	ATADEBUG(2,"ata_region_from_dev(%s base=%lu, start=%lu) ABSDEV=%d\n",
+	DrvDebug(IDEDBG,2,"ata_region_from_dev(%s base=%lu, start=%lu) ABSDEV=%d\n",
 		Dstr(dev), (u32_t)fp->base_lba, 
 		(u32_t)fp->slice[slice].p_start,
 		ISABSDEV(dev));
@@ -471,7 +411,7 @@ ata_region_from_dev(dev_t dev, u32_t *out_base, u32_t *out_len)
 			}
 		}
 	}
-	ATADEBUG(1,"region_from_dev: %s part_base=%lu slice_start=%lu final_base=%lu\n",
+	DrvDebug(IDEDBG,1,"region_from_dev: %s part_base=%lu slice_start=%lu final_base=%lu\n",
 		Dstr(dev),fp->base_lba,fp->slice[slice].p_start,base);
 
 	*out_base = base;
@@ -496,7 +436,7 @@ ata_pdinfo(dev_t dev)
 	ac = &ata_ctrl[ctrl];
 	u = ac->drive[drive];
 
-	ATADEBUG(1,"ata_pdinfo(%s, dev=%x) drive=%d part=%d\n",	
+	DrvDebug(IDEDBG,1,"ata_pdinfo(%s, dev=%x) drive=%d part=%d\n",	
 		Dstr(dev),dev,drive,part);
 
 	if (U_HAS_FLAG(u,UF_ATAPI)) return 0;
@@ -517,7 +457,7 @@ ata_pdinfo(dev_t dev)
 	if (mboot->signature != MBB_MAGIC) {
 		kmem_free((caddr_t)mboot, DEV_BSIZE);
 		fp = &u->fd[ part ];
-		ATADEBUG(1,"Part %d: start=0 p_size=%lu\n",
+		DrvDebug(IDEDBG,1,"Part %d: start=0 p_size=%lu\n",
 			part,fp->nsectors);
 		fp->slice[ATA_WHOLE_PART_SLICE].p_start = 0;
 		fp->slice[ATA_WHOLE_PART_SLICE].p_size  = fp->nsectors;
@@ -553,7 +493,7 @@ ata_getblock(dev_t dev, daddr_t blkno, caddr_t buf, u32_t count)
 	int	s, rc;
 	struct buf *bp; 
 
-	ATADEBUG(1,"ata_getblock(%x,%lu,%x,%lu)\n",dev,blkno,buf,count);
+	DrvDebug(IDEDBG,1,"ata_getblock(%x,%lu,%x,%lu)\n",dev,blkno,buf,count);
 
 	/*
 	 * Serialize ata_getblock() to prevent recursive entry.
@@ -600,7 +540,7 @@ ata_putblock(dev_t dev, daddr_t blkno, caddr_t buf, u32_t count)
 	int rc;
 	struct buf *bp; 
 
-	ATADEBUG(1,"ata_putblock(%x,%lu,%x,%lu)\n",dev,blkno,buf,count);
+	DrvDebug(IDEDBG,1,"ata_putblock(%x,%lu,%x,%lu)\n",dev,blkno,buf,count);
 
 	if (!(bp = geteblk())) return EIO;
 
@@ -626,7 +566,7 @@ berror(struct buf *bp, int resid, int err)
 {
 	char *str = ISABSDEV(bp->b_edev) ? "<ABSDEV>" : "";
 
-	ATADEBUG(3,"berror(%s)\n",str);
+	DrvDebug(IDEDBG,3,"berror(%s)\n",str);
 	bp->b_flags |= B_ERROR; 
 	bp->b_error = err; 
 	bp->b_resid = resid;
@@ -639,7 +579,7 @@ bok(struct buf *bp, int resid)
 {
 	char *str = ISABSDEV(bp->b_edev) ? "<ABSDEV>" : "";
 
-	ATADEBUG(3,"bok(%s)\n",str);
+	DrvDebug(IDEDBG,3,"bok(%s)\n",str);
 	bp->b_flags &= ~B_ERROR; 
 	bp->b_resid = resid;
 	if (ISABSDEV(bp->b_edev) && !(bp->b_flags & B_READ)) {
@@ -698,7 +638,7 @@ ide_poll_engine(ata_ctrl_t *ac)
 		drv_usecwait(2);
 
 		ata_err(ac, &ast, 0);
-		ATADEBUG(5, "poll: ST=%02x\n", ast);
+		DrvDebug(IDEDBG,5, "poll: ST=%02x\n", ast);
 
 		if (ast & ATA_SR_BSY) continue;
 
@@ -818,81 +758,6 @@ ide_poll_engine(ata_ctrl_t *ac)
 	AC_CLR_FLAG(ac, ACF_POLL_RUNNING);
 }
 
-/*
- * Dump the kernel message ring buffer (putbuf[]) to the console
- * in chronological order, without appending to putbuf again.
- */
-void
-dump_putbuf(void)
-{
-	int	s;
-	int	ndx, sz;
-	int	start, n, i;
-	int	lines = 0;
-
-	/*
-	 * Block interrupts while we snapshot indices so they don't move
-	 * underneath us. use whatever your tree uses for "block all"
-	 */
-	s = splhi();
-	ndx = putbufndx;
-	sz = putbufsz;
-	splx(s);
-
-	if (sz <= 0) return;
-
-	/* How many valid characters are there? */
-	if (ndx < sz) {
-		/* Buffer has never wrapped. Valid range: [0 .. ndx-1] */
-		start = 0;
-		n = ndx;
-	} else {
-		/* Buffer has wrapped. Oldest bytes is at ndx % sz and there 
-		 * are sz bytes of valid data
-		 */
-		start = ndx % sz;
-		n = sz;
-	}
-
-	for(i=0; i<n; i++) {
-		char c = putbuf[(start+i) % sz];
-
-		/* Early boot messages may have embedded NULLs; you can either
-		 * skip them or turn them into newlines. 
-		 */
-		if (c == '\0') continue;
-		dbg_putchar(c);
-
-		if (c == '\n') {
-			int ch;
-
-			if (lines++ < 24) continue;
-			dbg_printf("--More--");
-
-			ch = dbg_getchar() & 0x7f;
-			dbg_putchar(BS); dbg_putchar(BS);	
-			dbg_putchar(BS); dbg_putchar(BS);	
-			dbg_putchar(BS); dbg_putchar(BS);	
-			dbg_putchar(BS); dbg_putchar(BS);	
-			dbg_putchar('\n');	
-
-			switch(ch) {
-			case '\r':
-			case '\n':
-				lines=23;
-				break;
-			case 'q':
-			case 'Q':
-				dbg_putchar('\n');
-				return;
-			default:
-				lines=0;	
-				break;
-			}
-		}
-	}
-}
-
 char *
 get_sysid(u8_t systid)
 {
@@ -924,7 +789,7 @@ ata_dump_fdisk(int ctrl, u8_t drive)
 	ata_unit_t *u=ac->drive[drive];
 	int	fdisk, s;
 
-	ATADEBUG(1,"ata_dump_fdisk(%s)\n",Cstr(ac));
+	DrvDebug(IDEDBG,1,"ata_dump_fdisk(%s)\n",Cstr(ac));
 
 	if (!U_HAS_FLAG(u,UF_PRESENT)) return;
 	if (U_HAS_FLAG(u,UF_ATAPI)) return;

@@ -55,7 +55,7 @@ ataopen(dev_t *devp, int flags, int otyp, cred_t *crp)
 	ata_part_t *fp=&u->fd[fdisk];
 	int	s;
 
-	ATADEBUG(1,"ataopen(%s) present=%d dev=%x part=%d ctrl=%d driv=%d slice=%d\n",
+	DrvDebug(IDEDBG,1,"ataopen(%s) present=%d dev=%x part=%d ctrl=%d driv=%d slice=%d\n",
 		Dstr(dev),
 		U_HAS_FLAG(u,UF_PRESENT),
 		dev,fdisk,ctrl,drive,slice);
@@ -90,7 +90,7 @@ ataopen(dev_t *devp, int flags, int otyp, cred_t *crp)
             			return ENOMEM;
 			}
         		q->xfer_bufsz = ATA_XFER_BUFSZ;
-			ATADEBUG(5,"%s: xfer_buf=%lx\n",Cstr(ac),q->xfer_buf);
+			DrvDebug(IDEDBG,5,"%s: xfer_buf=%lx\n",Cstr(ac),q->xfer_buf);
     		}
 		AC_CLR_FLAG(ac,ACF_BUSY); 
 		q->state	= AS_IDLE;
@@ -127,7 +127,7 @@ ataopen(dev_t *devp, int flags, int otyp, cred_t *crp)
 		u->atapi_blksz=(blksz ? blksz : 2048);
 		u->atapi_blocks=blocks;
 		u->nsectors = (u32_t)(blocks*(u->atapi_blksz >> 9));
-		ATADEBUG(1,"ataopen() atapi_blksz=%ld atapi_blocks=%ld\n",
+		DrvDebug(IDEDBG,1,"ataopen() atapi_blksz=%ld atapi_blocks=%ld\n",
 			 u->atapi_blksz, u->atapi_blocks);
 
 		if (slice == 0 || slice == ATA_WHOLE_PART_SLICE) goto ok;
@@ -159,7 +159,7 @@ ataclose(dev_t dev, int flags, int otyp, cred_t *crp)
 	ata_part_t *fp=&u->fd[ATA_PART(dev)];
 	int	s;
 
-	ATADEBUG(1,"ataclose(%s) present=%d fdisk_valid=%d vtoc_valid=%d\n",
+	DrvDebug(IDEDBG,1,"ataclose(%s) present=%d fdisk_valid=%d vtoc_valid=%d\n",
 		Dstr(dev),
 		U_HAS_FLAG(u,UF_PRESENT),
 		u->fdisk_valid,fp->vtoc_valid);
@@ -169,7 +169,7 @@ ataclose(dev_t dev, int flags, int otyp, cred_t *crp)
 	s=splbio();
 	AC_SET_FLAG(ac, ACF_CLOSING);
 	while (AC_HAS_FLAG(ac,ACF_BUSY) || q->q_head) {
-		ATADEBUG(2,"busy=%d q_head=%lx\n",AC_HAS_FLAG(ac,ACF_BUSY),q->q_head);
+		DrvDebug(IDEDBG,2,"busy=%d q_head=%lx\n",AC_HAS_FLAG(ac,ACF_BUSY),q->q_head);
 		sleep((caddr_t)ac->ioque,PRIBIO);
 	}
 
@@ -177,7 +177,7 @@ ataclose(dev_t dev, int flags, int otyp, cred_t *crp)
 
 	if (q->open_count == 0) {
 		if (q->xfer_buf) {
-			ATADEBUG(5,"ataclose(%s: free %lx\n",
+			DrvDebug(IDEDBG,5,"ataclose(%s: free %lx\n",
 				Cstr(ac),q->xfer_buf);
 			kmem_free(q->xfer_buf,q->xfer_bufsz);
 			q->xfer_buf  = 0;
@@ -194,7 +194,7 @@ ataclose(dev_t dev, int flags, int otyp, cred_t *crp)
 void
 atabreakup(struct buf *bp)
 {
-	ATADEBUG(1,"atabreakup(%s)\n",Dstr(bp->b_edev));
+	DrvDebug(IDEDBG,1,"atabreakup(%s)\n",Dstr(bp->b_edev));
 	pio_breakup(atastrategy, bp, MAXNBLKS);
 }
 
@@ -218,7 +218,7 @@ atastrategy(struct buf *bp)
 	bp->b_error = 0;
 	bp->b_resid = 0;
 
-        ATADEBUG(1,"atastrategy(%s) %s lba=%lu nsec=%lu flags=%x\n", 
+        DrvDebug(IDEDBG,1,"atastrategy(%s) %s lba=%lu nsec=%lu flags=%x\n", 
 		Dstr(dev), 
 		(bp->b_flags&B_READ)?"READ":"WRITE",
 		bp->b_blkno, 
@@ -261,7 +261,7 @@ atastrategy(struct buf *bp)
 		r->atapi_phase	= ATAPI_PHASE_WAIT_PKT_DRQ;
 		r->atapi_dir	= r->is_write ?ATAPI_DIR_WRITE :ATAPI_DIR_READ;
 		r->atapi_use_dma= 0;
-		ATADEBUG(1,"r->lba=%ld r->nsec=%ld\n",r->lba, r->nsec);
+		DrvDebug(IDEDBG,1,"r->lba=%ld r->nsec=%ld\n",r->lba, r->nsec);
 	} else {
 		r->lba          = base + (u32_t)bp->b_blkno;
 		r->lba_cur      = r->lba;
@@ -286,7 +286,7 @@ ataread(dev_t dev, uio_t *uiop, cred_t *crp)
 	if (devsize == 0)
 		devsize = (daddr_t)u->nsectors;
 
-	ATADEBUG(1,"ataread(%s)\n",Dstr(dev));
+	DrvDebug(IDEDBG,1,"ataread(%s)\n",Dstr(dev));
 
 	return ata_physio(atabreakup, dev, B_READ, devsize, uiop);
 }
@@ -305,7 +305,7 @@ atawrite(dev_t dev, uio_t *uiop, cred_t *crp)
 	if (devsize == 0)
 		devsize = (daddr_t)u->nsectors;
 
-	ATADEBUG(1,"atawrite(%s)\n",Dstr(dev));
+	DrvDebug(IDEDBG,1,"atawrite(%s)\n",Dstr(dev));
 
 	return ata_physio(atabreakup, dev, B_WRITE, devsize, uiop);
 }
@@ -540,7 +540,7 @@ ataioctl(dev_t dev, int cmd, caddr_t arg, int mode, cred_t *crp, int *rvalp)
 	int	drive = u->drive;
 	ata_part_t *fp=&u->fd[fdisk];
 
-	ATADEBUG(1,"ataioctl(%s,%s)\n",Dstr(dev),Istr(cmd));
+	DrvDebug(IDEDBG,1,"ataioctl(%s,%s)\n",Dstr(dev),Istr(cmd));
 
 	if (!U_HAS_FLAG(u,UF_PRESENT)) return ENODEV;
 
@@ -641,7 +641,7 @@ atainit(void)
 	ata_ctrl_t *ac;
 	ata_counters_t *counters;
 
-	ATADEBUG(1,"atainit()\n");
+	DrvDebug(IDEDBG,1,"atainit()\n");
 
 	/*** Defensive check to catch my forgetting to change major config
 	 * correctly in /etc/conf/cf.d/mdevic
@@ -720,7 +720,7 @@ ataintr(int irq)
 	ata_unit_t *u;
 	u8_t 	st, ast, err, drvs;
 
-	ATADEBUG(1,"ataintr(%d)\n",irq);
+	DrvDebug(IDEDBG,1,"ataintr(%d)\n",irq);
 
 	if ((ac=atafindctrl(irq)) == (ata_ctrl_t *)0)
 		return DDI_INTR_UNCLAIMED;

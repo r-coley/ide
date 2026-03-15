@@ -19,9 +19,9 @@ ata_sel(ata_ctrl_t *ac, int drive, u32_t lba)
 		if (ac->sel_drive != drive || ac->sel_mode != SEL_LBA28 || 
 						   ac->sel_hi4 != hi4) {
 			ata_err(ac, &ast, &erc);
-			ATADEBUG(9,"ata_sel(%d,%lu) ST=%02x ER=%02x: ",
+			DrvDebug(IDEDBG,9,"ata_sel(%d,%lu) ST=%02x ER=%02x: ",
 				drive,lba,ast,erc);
-			ATADEBUG(1,"LBA %02x\n",ATA_DH(drive,1,hi4));
+			DrvDebug(IDEDBG,1,"LBA %02x\n",ATA_DH(drive,1,hi4));
 			outb(ATA_DRVHD_O(ac), ATA_DH(drive,1,hi4));
 			ata_delay400(ac);
 			ac->sel_drive = drive;
@@ -32,9 +32,9 @@ ata_sel(ata_ctrl_t *ac, int drive, u32_t lba)
 		if (ac->sel_drive != drive || ac->sel_mode != SEL_CHS || 
 						   ac->sel_hi4 != 0) {
 			ata_err(ac, &ast, &erc);
-			ATADEBUG(9,"ata_sel(%d,%lu) ST=%02x ER=%02x: ",
+			DrvDebug(IDEDBG,9,"ata_sel(%d,%lu) ST=%02x ER=%02x: ",
 				drive,lba,ast,erc);
-			ATADEBUG(1,"CHS %02x\n",ATA_DH(drive,0,0));
+			DrvDebug(IDEDBG,1,"CHS %02x\n",ATA_DH(drive,0,0));
 			outb(ATA_DRVHD_O(ac), ATA_DH(drive,0,0));
 			ata_delay400(ac);
 			ac->sel_drive = drive;
@@ -122,7 +122,7 @@ ata_identify(ata_ctrl_t *ac, int drive)
 	ata_req_t rb, *r=&rb;
 	u16_t 	id[256];
 
-	ATADEBUG(1,"ata_identify(%s): io=%x\n",Cstr(ac),ac->io_base);
+	DrvDebug(IDEDBG,1,"ata_identify(%s): io=%x\n",Cstr(ac),ac->io_base);
 
 	if (!AC_HAS_FLAG(ac,ACF_PRESENT)) return ENODEV;
 
@@ -165,7 +165,7 @@ ata_flush_cache(ata_ctrl_t *ac,u8_t drive)
 {
 	ata_req_t rb, *r=&rb;
 
-	ATADEBUG(1,"ata_flush_cache(%s)\n",Cstr(ac));
+	DrvDebug(IDEDBG,1,"ata_flush_cache(%s)\n",Cstr(ac));
 
 	bzero((caddr_t)r,sizeof(*r));
 	r->drive	= drive;
@@ -188,7 +188,7 @@ ata_quiesce_ctrl(ata_ctrl_t *ac)
 	u32_t	words, bc; 		/* Was u16_t*/
 	u16_t	scratch[256];
 
-	ATADEBUG(9,"ide_quiesce_ctrl(%s)\n",Cstr(ac));
+	DrvDebug(IDEDBG,9,"ide_quiesce_ctrl(%s)\n",Cstr(ac));
 	if (ata_wait(ac, 0, ATA_SR_BSY, 500000, 0, 0) != 0)
 		; /* Perhaps reset ctrl and retry */
 
@@ -259,7 +259,7 @@ ata_softreset_ctrl(ata_ctrl_t *ac)
 {
 	int	i, was_enabled = AC_HAS_FLAG(ac,ACF_IRQ_ON);
 
-	ATADEBUG(1,"ata_softreset_ctrl(%d)\n",ac->idx);
+	DrvDebug(IDEDBG,1,"ata_softreset_ctrl(%d)\n",ac->idx);
 
 	BUMP(ac,softresets);
 	AC_CLR_FLAG(ac,ACF_IRQ_ON); /* Clear the flag */
@@ -325,7 +325,7 @@ ata_negotiate_pio_multiple(ata_ctrl_t *ac, u8_t drive)
     }
     if (u) u->pio_multi = 1;
     ac->pio_multi = 1;
-    ATADEBUG(1, "%s: PIO multiple not supported, using single-sector\n",
+    DrvDebug(IDEDBG,1, "%s: PIO multiple not supported, using single-sector\n",
 		Cstr(ac));
 }
 
@@ -395,20 +395,20 @@ pio_one_sector(ata_ctrl_t *ac, ata_req_t *r)
 	int	i;
 	
 	if (r->is_write) {
-		ATADEBUG(2,"pio_one_sector: WRITE lba=%lu addr=%08x\n",
+		DrvDebug(IDEDBG,2,"pio_one_sector: WRITE lba=%lu addr=%08x\n",
 			(u32_t)r->lba_cur, p16);
 
 		for(i=0; i<(ATA_SECSIZE/2); i++)
 			outw(ATA_DATA_O(ac), p16[i]);
 	} else {
-		ATADEBUG(2,"pio_one_sector: READ lba=%lu addr=%08x\n",
+		DrvDebug(IDEDBG,2,"pio_one_sector: READ lba=%lu addr=%08x\n",
 			(u32_t)r->lba_cur, p16);
 
 		for(i=0; i<(ATA_SECSIZE/2); i++)
 			p16[i] = inw(ATA_DATA_O(ac));
 	}
 	XFERINC(r);
-	ATADEBUG(3,"pio_one_sector done: xfer_off=%08x chunk_left=%d sectors_left=%d\n", r->xfer_off,r->chunk_left,r->sectors_left);
+	DrvDebug(IDEDBG,3,"pio_one_sector done: xfer_off=%08x chunk_left=%d sectors_left=%d\n", r->xfer_off,r->chunk_left,r->sectors_left);
 	return 0;
 }
 
@@ -430,7 +430,7 @@ ata_copyback_chunk_if_needed(ata_ctrl_t *ac, ata_req_t *r)
 	if (r->chunk_bytes == 0) goto out_clear;
 
 	if (r->xfer_off < r->chunk_bytes) {
-		ATADEBUG(0,"%s: copyback underflow req=%ld off=%lu chunk_bytes=%lu\n",
+		DrvDebug(IDEDBG,0,"%s: copyback underflow req=%ld off=%lu chunk_bytes=%lu\n",
 			Cstr(ac), r->reqid,
 			(u32_t)r->xfer_off, (u32_t)r->chunk_bytes);
 		goto out_clear;
@@ -522,9 +522,9 @@ ata_service_irq(ata_ctrl_t *ac, ata_req_t *r, u8_t st)
 	if (!(st & ATA_SR_BSY) &&
 	    !(st & ATA_SR_DRQ)) {
 		if (r->sectors_left == 0) {
-			ATADEBUG(2,"Calling finish as !ATA_SR_BSY && !ATA_SR_DRQ ST=%02x flags=%08x\n",st,ac->flags);
+			DrvDebug(IDEDBG,2,"Calling finish as !ATA_SR_BSY && !ATA_SR_DRQ ST=%02x flags=%08x\n",st,ac->flags);
 			ata_finish_current(ac, EOK, __LINE__);
-			ATADEBUG(2,"Now calling ide_kick flags=%08x\n",
+			DrvDebug(IDEDBG,2,"Now calling ide_kick flags=%08x\n",
 				ac->flags);
 			ide_kick(ac); /*NEW*/
 			return;
@@ -631,7 +631,7 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 			if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY,200000,0,0) == 0)
 				ata_prime_write(ac,r);
 			else
-				ATADEBUG(2,"%s: DRQ not ready for write ST=%02x\n",
+				DrvDebug(IDEDBG,2,"%s: DRQ not ready for write ST=%02x\n",
 					Cstr(ac),inb(ATA_ALTSTATUS_O(ac)));
 		}
 	}
@@ -641,7 +641,7 @@ ata_program_taskfile(ata_ctrl_t *ac, ata_req_t *r)
 int 
 ata_program_next_chunk(ata_ctrl_t *ac, ata_req_t *r,int arm_ticks)
 {
-	ATADEBUG(5,"ata_program_next_chunk(%s)\n",Cstr(ac));
+	DrvDebug(IDEDBG,5,"ata_program_next_chunk(%s)\n",Cstr(ac));
 	if (r->cmd == ATA_CMD_PACKET)
 		return atapi_request(ac,r,arm_ticks);
 	else
@@ -657,7 +657,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 	ata_unit_t  *u = ac->drive[r->drive];
 	int	s;
 
-	ATADEBUG(2,"ata_request(Reqid=%ld)\n",r ? r->reqid : 0);
+	DrvDebug(IDEDBG,2,"ata_request(Reqid=%ld)\n",r ? r->reqid : 0);
 	if (!r) return 0;
 
 	if (AC_HAS_FLAG(ac,ACF_INTR_MODE)) {
@@ -712,7 +712,7 @@ ata_request(ata_ctrl_t *ac,ata_req_t *r,int arm_ticks)
 		}
 	}
 
-	ATADEBUG(5,"%s: ata_program_next_chunk(%s) blk=%lu count=%lu\n",
+	DrvDebug(IDEDBG,5,"%s: ata_program_next_chunk(%s) blk=%lu count=%lu\n",
 		Cstr(ac),r->is_write?"Write":"Read",r->lba_cur,n);
 
 	s=splbio();
@@ -745,21 +745,21 @@ ata_finish_current(ata_ctrl_t *ac, int err,int place)
 	size_t bytes_done;
 	u32_t 	resid;
 
-	ATADEBUG(2,"ata_finish_current(err=%d place=%d)\n",err,place);
+	DrvDebug(IDEDBG,2,"ata_finish_current(err=%d place=%d)\n",err,place);
 	if (!ac) {
-		ATADEBUG(2,"ata_finish_current() ac NULL\n");
+		DrvDebug(IDEDBG,2,"ata_finish_current() ac NULL\n");
 		return;
 	}
 	ide_cancel_watchdog(ac);
 
 	que = ac->ioque;
 	if (!que) {
-		ATADEBUG(2,"ata_finish_current() que NULL\n");
+		DrvDebug(IDEDBG,2,"ata_finish_current() que NULL\n");
 	}
 	s = splbio();
 	r  = que ? que->cur : NULL;
 	if (!r) {
-    		ATADEBUG(9,"ata_finish(reqid: None)\n");
+    		DrvDebug(IDEDBG,9,"ata_finish(reqid: None)\n");
     		if (que) {
         		que->last_err = err;
         		que->state = AS_IDLE;
@@ -769,7 +769,7 @@ ata_finish_current(ata_ctrl_t *ac, int err,int place)
     		splx(s);
     		return;
 	}
-	ATADEBUG(9,"ata_finish(reqid: %lu)\n",r->reqid);
+	DrvDebug(IDEDBG,9,"ata_finish(reqid: %lu)\n",r->reqid);
 	r->err = err;
 	if (r->flags & ATA_RF_DONE) { splx(s); return; }
 	r->flags |= ATA_RF_DONE;
@@ -797,7 +797,7 @@ ata_finish_current(ata_ctrl_t *ac, int err,int place)
 		 * FIXME: This should neve get called now and should be
 		 * removable
 		 */
-		ATADEBUG(0,"%s: NEEDCOPY still set at finish req=%ld off=%lu chunk_bytes=%lu\n",
+		DrvDebug(IDEDBG,0,"%s: NEEDCOPY still set at finish req=%ld off=%lu chunk_bytes=%lu\n",
 			Cstr(ac),r->reqid,
 			(u32_t)r->xfer_off,(u32_t)r->chunk_bytes);
 
@@ -842,7 +842,7 @@ ata_data_phase_service(ata_ctrl_t *ac, ata_req_t *r)
 
 	/* Wait briefly for BSY to clear and DRQ to assert */
 	if (ata_wait(ac, ATA_SR_DRQ|ATA_SR_DRDY, ATA_SR_BSY, 10000, &ast, 0)) {
-		ATADEBUG(2,"ata_data_phase: DRQ wait timeout %02x\n",ast);
+		DrvDebug(IDEDBG,2,"ata_data_phase: DRQ wait timeout %02x\n",ast);
 		r->err = ast;
 		return -1;
 	}
@@ -856,7 +856,7 @@ ata_data_phase_service(ata_ctrl_t *ac, ata_req_t *r)
 	 * for the next DRQ edge.
 	 */
 	if (pio_one_sector(ac, r) != 0) {
-		ATADEBUG(1,"ata_data_phase: pio_one_sector failed\n");
+		DrvDebug(IDEDBG,1,"ata_data_phase: pio_one_sector failed\n");
 		rc = -1;
 	}
 
@@ -875,13 +875,13 @@ ata_prime_write(ata_ctrl_t *ac, ata_req_t *r)
 
 	if (ata_wait(ac,ATA_SR_DRQ,ATA_SR_BSY,1000000,&ast,&err) != 0) {
 		if (!(ast & ATA_SR_DRQ)) {
-			ATADEBUG(2,"ata_prime_write(): wait DRQ fail ST=%02x ER=%02x\n",ast,err);
+			DrvDebug(IDEDBG,2,"ata_prime_write(): wait DRQ fail ST=%02x ER=%02x\n",ast,err);
 			return;
 		}
 	}
 
-	if (!q) ATADEBUG(1,"que is null\n");
-	if (!r->xptr) ATADEBUG(1,"r->xptr is null\n");
+	if (!q) DrvDebug(IDEDBG,1,"que is null\n");
+	if (!r->xptr) DrvDebug(IDEDBG,1,"r->xptr is null\n");
 	
 	if (pio_one_sector(ac,r) != 0) {
 		/* Error */
@@ -899,7 +899,7 @@ ata_pushreq(ata_ctrl_t *ac, ata_req_t *r)
     struct buf  *bp  = r ? r->bp : NULL;
     int s;
 
-    ATADEBUG(1, "ata_pushreq(%s: r->id=%ld flags=%08x: lba=%ld ABSDEV=%d)\n",
+    DrvDebug(IDEDBG,1, "ata_pushreq(%s: r->id=%ld flags=%08x: lba=%ld ABSDEV=%d)\n",
         Cstr(ac), r ? r->reqid : 0L, ac ? ac->flags : 0, r->lba, ISABSDEV(bp->b_edev));
 
     if (!ac || !que || !r || !bp) {

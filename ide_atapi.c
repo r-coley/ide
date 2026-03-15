@@ -91,7 +91,7 @@ atapi_decode_sense(u8_t *s, int len)
 int
 atapi_dosend_packet(ata_ctrl_t *ac, int drive, u16_t byte_count,int where)
 {
-	ATADEBUG(1,"atapi_dosend_packet(%s, drive=%d, bc=%d,LINE=%d)\n",
+	DrvDebug(IDEDBG,1,"atapi_dosend_packet(%s, drive=%d, bc=%d,LINE=%d)\n",
 		Cstr(ac),drive,byte_count,where);
 
 	/* Select device + 400ns settle */
@@ -164,7 +164,7 @@ atapi_inquiry(ata_ctrl_t *ac, u8_t drive)
 	u16_t 	avail, words, xfer_len = 36; 
 	u8_t 	buf[64], pdt, rmb, ast, err;
 
-	ATADEBUG(1,"atapi_inquiry(drive=%d)\n",drive);
+	DrvDebug(IDEDBG,1,"atapi_inquiry(drive=%d)\n",drive);
 	cdblen=build_cdb_pkt(CDB_INQUIRY,(u8_t *)u->cdb,(u32_t)xfer_len,(u32_t)0);
 
 	/* Program expected transfer size into LBA1/LBA2 (ATAPI byte-count) */
@@ -221,7 +221,7 @@ atapi_read10(ata_ctrl_t *ac,u8_t drive,u32_t lba,u16_t nblks,void *buf)
 	int	cdblen;
 	u32_t	xfer;
 
-	ATADEBUG(1,"atapi_read10(drive=%d,lba=%ld,nblks=%d\n",drive,lba,nblks);
+	DrvDebug(IDEDBG,1,"atapi_read10(drive=%d,lba=%ld,nblks=%d\n",drive,lba,nblks);
 
 	/* total transfer size in bytes */
 	xfer = (u32_t)nblks * 
@@ -230,7 +230,7 @@ atapi_read10(ata_ctrl_t *ac,u8_t drive,u32_t lba,u16_t nblks,void *buf)
 
 	cdblen=build_cdb_pkt(CDB_READ_10,(u8_t *)u->cdb, lba, (u32_t)nblks);
 
-	ATADEBUG(1,"READ10: drive=%d LBA=%lu nblks=%u xfer=%lu blksz=%u\n",
+	DrvDebug(IDEDBG,1,"READ10: drive=%d LBA=%lu nblks=%u xfer=%lu blksz=%u\n",
 		 drive,lba,nblks,xfer,
 		 ac->drive[drive]->atapi_blksz);
 
@@ -275,7 +275,7 @@ atapi_packet(ata_ctrl_t *ac, u8_t drive, u8_t *cdb, int cdb_len, void *buf, u32_
 	int   rc;
 	int   retries = 0;
 
-	ATADEBUG(1,"atapi_packet(%s,where=%d)\n",Cstr(ac),where);
+	DrvDebug(IDEDBG,1,"atapi_packet(%s,where=%d)\n",Cstr(ac),where);
 retry_cmd:
 	U_CLR_FLAG(u,UF_ABORT);
 
@@ -317,7 +317,7 @@ retry_cmd:
 	for (; !U_HAS_FLAG(u,UF_ABORT);) {
 		/* Wait for BSY to clear */
 		if (ata_wait(ac,0,ATA_SR_BSY,1000000L,&st,0) != 0) {
-			ATADEBUG(1,"atapi_packet: timeout waiting for BSY clear ST=%02x\n",st);
+			DrvDebug(IDEDBG,1,"atapi_packet: timeout waiting for BSY clear ST=%02x\n",st);
 			rc = EIO;
 			goto sense_or_fail;
 		}
@@ -348,7 +348,7 @@ retry_cmd:
 			if (bc == 0) bc=2048;
 		}
 
-		ATADEBUG(1,"atapi_packet: DATA phase ir=%02x bc=%u xfer_len=%lu\n",ir,bc,xfer_len);
+		DrvDebug(IDEDBG,1,"atapi_packet: DATA phase ir=%02x bc=%u xfer_len=%lu\n",ir,bc,xfer_len);
 
 		switch(ir) {
 		case 0x00:
@@ -384,17 +384,17 @@ retry_cmd:
 	}
 
 	if (ata_wait(ac,0,ATA_SR_BSY|ATA_SR_DRQ,100000L,&st,&err) != 0) {
-		ATADEBUG(1,"atapi_packet: final wait for BSY clear timed out ST=%02x ER=%02x\n",st,err);
+		DrvDebug(IDEDBG,1,"atapi_packet: final wait for BSY clear timed out ST=%02x ER=%02x\n",st,err);
 		rc=EIO;
 		goto sense_or_fail;
 	}
 	if (st & ATA_SR_ERR) {
-		ATADEBUG(1,"atapi_packet: final status error ST=%02x ERR=%02x\n",st,err);
+		DrvDebug(IDEDBG,1,"atapi_packet: final status error ST=%02x ERR=%02x\n",st,err);
 		rc=EIO;
 		goto sense_or_fail;
 	}
 	if ((st & ATA_SR_DWF) && U_HAS_FLAG(u,UF_ATAPI)) {
-		ATADEBUG(1,"atapi_packet: final status error ST=%02x ERR=%02x\n",st,err);
+		DrvDebug(IDEDBG,1,"atapi_packet: final status error ST=%02x ERR=%02x\n",st,err);
 		rc=EIO;
 		goto sense_or_fail;
 	}
@@ -500,13 +500,13 @@ atapi_write10(ata_ctrl_t *ac,u8_t drive,u32_t lba,u16_t nblks,const void *buf)
 	u32_t	xfer;
 	int	cdblen;
 
-	ATADEBUG(1,"atapi_write10(drive=%d,lba=%ld,nblks=%d\n",drive,lba,nblks);
+	DrvDebug(IDEDBG,1,"atapi_write10(drive=%d,lba=%ld,nblks=%d\n",drive,lba,nblks);
 
 	cdblen=build_cdb_pkt(CDB_WRITE_10,(u8_t *)u->cdb,(u32_t)lba,(u32_t)nblks);
 	xfer = (u32_t)nblks * (ac->drive[drive]->atapi_blksz 
 				? ac->drive[drive]->atapi_blksz : 2048);
 
-	ATADEBUG(1,"WRITE10: drive=%d LBA=%lu nblks=%u xfer=%lu blksz=%u\n",
+	DrvDebug(IDEDBG,1,"WRITE10: drive=%d LBA=%lu nblks=%u xfer=%lu blksz=%u\n",
 		 drive,lba,nblks,xfer,
 		 ac->drive[drive]->atapi_blksz);
 
@@ -550,7 +550,7 @@ atapi_play_audio_msf(ata_ctrl_t *ac, u8_t drive,
 void
 atapi_send_cdb(ata_ctrl_t *ac, u8_t *cdb, int cdb_len, int where)
 {
-	ATADEBUG(1,"atapi_send_cdb(where=%d, cdb_len=%d CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
+	DrvDebug(IDEDBG,1,"atapi_send_cdb(where=%d, cdb_len=%d CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			where, cdb_len,cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8]);
 	if (cdb_len < 0) cdb_len=0;
 	if (!ATAPI_VALID_CDB(cdb_len)) {
@@ -569,7 +569,7 @@ atapi_start_irq(ata_ctrl_t *ac, ata_req_t *r)
 	u32_t	blksz = (u && u->atapi_blksz) ? u->atapi_blksz : 2048;
 	u16_t	bc    = (u16_t)blksz;
 
-	ATADEBUG(1,"atapi_start_irq()\n");
+	DrvDebug(IDEDBG,1,"atapi_start_irq()\n");
 
 	/* Select drive and program the PACKET command with transfer length. */
 	if (ata_sel(ac, r->drive, 0) != 0) return EIO;
@@ -605,7 +605,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 		cdb[5] = CDB32_B0(x1);
 		cdb[7] = CDB16_H((u16_t)x2);
 		cdb[8] = CDB16_L((u16_t)x2);
-		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
+		DrvDebug(IDEDBG,1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8]);
 		return 12;
 
@@ -626,7 +626,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 			cdb[7] = CDB16_H((u16_t)x2);
 			cdb[8] = CDB16_L((u16_t)x2);
 		}
-		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
+		DrvDebug(IDEDBG,1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8]);
 		return 12;
 	    }
@@ -639,7 +639,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 		cdb[3] = CDB16_H((u16_t)x1);
 		cdb[4] = CDB16_L((u16_t)x1); /* allocation length */
 		cdb[5] = 0;
-		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
+		DrvDebug(IDEDBG,1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8]);
 		return 12;
 
@@ -647,7 +647,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 	case CDB_TEST_UNIT_READY:
 		bzero((caddr_t)cdb, 12);
 		cdb[0] = opcode;
-		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
+		DrvDebug(IDEDBG,1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8]);
 		return 12;
 
@@ -655,7 +655,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 		bzero((caddr_t)cdb, 12);
 		cdb[0] = opcode;
 		cdb[4] = (u8_t)x2;                /* alloc length */
-		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
+		DrvDebug(IDEDBG,1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8]);
 		return 12;
 
@@ -672,7 +672,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 		cdb[7] = CDB16_H(x2);
 		cdb[8] = CDB16_L(x2);
 		cdb[9] = format & 0x0F;       /* format in low 4 bits */
-		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
+		DrvDebug(IDEDBG,1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8],cdb[9],cdb[10],cdb[11]);
 		return 12;
 	    }
@@ -693,7 +693,7 @@ build_cdb_pkt(u8_t opcode, u8_t *cdb, u32_t x1, u32_t x2)
 		cdb[6] = end_m;
 		cdb[7] = end_s;
 		cdb[8] = end_f;
-		ATADEBUG(1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
+		DrvDebug(IDEDBG,1,"build_cdb_pkt(CDB=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 			cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8],cdb[9],cdb[10],cdb[11]);
 		return 12;
 	    }
@@ -732,7 +732,7 @@ atapi_request(ata_ctrl_t *ac, ata_req_t *r, int arm_ticks)
 	u16_t  nblks;
 	int    dir, rc;
 
-	ATADEBUG(2,"atapi_request(Reqid=%ld,arm_ticks=%d)\n",
+	DrvDebug(IDEDBG,2,"atapi_request(Reqid=%ld,arm_ticks=%d)\n",
 		r ? r->reqid : 0, arm_ticks);
 
 	r->flags &= ~ATA_RF_CDB_SENT;
@@ -876,7 +876,7 @@ atapi_send_packet(ata_ctrl_t *ac, u8_t drive, u8_t *cdb, int cdb_len)
 	u16_t 	words_cdb[6], bc;
 	int 	attempt;
 
-	ATADEBUG(1,"atapi_send_packet(%s, CDB[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
+	DrvDebug(IDEDBG,1,"atapi_send_packet(%s, CDB[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x])\n",
 		Cstr(ac),cdb[0],cdb[1],cdb[2],cdb[3],cdb[4],cdb[5],cdb[6],cdb[7],cdb[8],cdb[9],cdb[10],cdb[11]);
 
 	if (cdb_len>12) cdb_len=12;
@@ -905,7 +905,7 @@ atapi_send_packet(ata_ctrl_t *ac, u8_t drive, u8_t *cdb, int cdb_len)
 		cod = ir & ATAPI_IR_COD;   /* Command/Data = 0x01 */
 		io  = ir & ATAPI_IR_IO;    /* 1 = device->host */
 		if (!cod || io) { 
-			ATADEBUG(1,"%s: PACKET phase mismatch: ST=%02x IR=%02x (retry)\n",
+			DrvDebug(IDEDBG,1,"%s: PACKET phase mismatch: ST=%02x IR=%02x (retry)\n",
 				Cstr(ac), inb(ATA_ALTSTATUS_O(ac)),ir);
 			continue;
 		}
@@ -1027,7 +1027,7 @@ atapi_handle_command_phase(ata_ctrl_t *ac,ata_req_t *r)
 	r->atapi_phase = ATAPI_PHASE_SEND_PACKET;
 
 	if ((r->flags & ATA_RF_CDB_SENT) == 0) {
-		ATADEBUG(2,"ATAPI send CDB len=%d\n", (r->cdb_len + 1) >> 1);
+		DrvDebug(IDEDBG,2,"ATAPI send CDB len=%d\n", (r->cdb_len + 1) >> 1);
 		outsw(ATA_DATA_O(ac), (void *)r->cdb, (r->cdb_len + 1) >> 1);
 		r->flags |= ATA_RF_CDB_SENT;
 	}
@@ -1042,7 +1042,7 @@ atapi_handle_data_phase(ata_ctrl_t *ac, ata_req_t *r, u8_t ir, u16_t bc, u32_t b
 	u16_t  wcount;
 	u8_t   st2;
 
-	ATADEBUG(1,"atapi_handle_data_phase()\n");
+	DrvDebug(IDEDBG,1,"atapi_handle_data_phase()\n");
 
 	/*
 	 * Some devices (including 86Box) only interrupt once at the start
@@ -1052,7 +1052,7 @@ atapi_handle_data_phase(ata_ctrl_t *ac, ata_req_t *r, u8_t ir, u16_t bc, u32_t b
 	 * bc-sized chunk and waiting for another IRQ that will never come.
 	 */
 	for (;;) {
-		ATADEBUG(3, "%s: %s xptr=%lx chunk_bytes=%ld bc=%u\n",
+		DrvDebug(IDEDBG,3, "%s: %s xptr=%lx chunk_bytes=%ld bc=%u\n",
 		    Cstr(ac),
 		    (ir & ATAPI_IR_IO) ? "DATAIN" : "DATAOUT",
 		    (u_long)r->xptr, (long)r->chunk_bytes, (unsigned)bc);
@@ -1171,7 +1171,7 @@ atapi_maybe_finish(ata_ctrl_t *ac,ata_req_t *r,u8_t st,int where)
 {
 	ata_ioque_t *q = ac->ioque;
 
-	ATADEBUG(1,"atapi_maybe_finish(where=%d)\n",where);
+	DrvDebug(IDEDBG,1,"atapi_maybe_finish(where=%d)\n",where);
 
 	/* Only consider completion when BSY and DRQ are both clear. */
 	if ((st & (ATA_SR_DRQ | ATA_SR_BSY)) == 0) {
@@ -1203,7 +1203,7 @@ atapi_service_irq(ata_ctrl_t *ac,ata_req_t *r,u8_t st)
 	u16_t  bc;
 	u8_t   ir, cod, io;
 
-	ATADEBUG(1,"atapi_service_irq(r=%08x,st=%02x)\n",r,st);
+	DrvDebug(IDEDBG,1,"atapi_service_irq(r=%08x,st=%02x)\n",r,st);
 	if (r == 0) return;
 
 	u = ac->drive[r->drive];
@@ -1230,7 +1230,7 @@ atapi_service_irq(ata_ctrl_t *ac,ata_req_t *r,u8_t st)
 		    r->atapi_phase == ATAPI_PHASE_WAIT_DATA) {
 			atapi_maybe_finish(ac, r, st, __LINE__);
 		} else {
-			ATADEBUG(1,"atapi: DRQ=0 in phase %d, status=0x%02x\n",
+			DrvDebug(IDEDBG,1,"atapi: DRQ=0 in phase %d, status=0x%02x\n",
 						(int)r->atapi_phase, st);
 			r->atapi_phase = ATAPI_PHASE_ERROR;
 			atapi_maybe_finish(ac, r, st, __LINE__);
